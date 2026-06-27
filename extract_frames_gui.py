@@ -326,6 +326,24 @@ class AlgoPanel(QGroupBox):
         adv_l.addWidget(self.sp_hash_size, 5, 2)
         adv_l.addWidget(field_label("時間視窗 (0=全比)"), 6, 1)
         adv_l.addWidget(self.sp_window, 6, 2)
+
+        # CLIP 運算裝置
+        adv_l.addWidget(field_label("CLIP 裝置"), 7, 1)
+        dev_row = QHBoxLayout(); dev_row.setSpacing(8)
+        self.cmb_device = QComboBox()
+        self.cmb_device.addItems(["自動偵測", "GPU (CUDA)", "CPU"])
+        self.cmb_device.setToolTip(
+            "CLIP（最精準等級）的運算裝置。\n"
+            "自動偵測：有可用的 NVIDIA GPU 就用 GPU，否則用 CPU。\n"
+            "需安裝 CUDA 版 PyTorch 才會偵測到 GPU。")
+        dev_row.addWidget(self.cmb_device)
+        self.btn_detect = QPushButton("偵測 GPU")
+        self.btn_detect.clicked.connect(self._detect_gpu)
+        dev_row.addWidget(self.btn_detect)
+        self.lbl_device = QLabel("")
+        self.lbl_device.setObjectName("fieldLabel")
+        dev_row.addWidget(self.lbl_device, 1)
+        adv_l.addLayout(dev_row, 7, 2, 1, 2)
         adv_l.setColumnStretch(3, 1)
 
         self.adv.setVisible(False)
@@ -353,7 +371,22 @@ class AlgoPanel(QGroupBox):
         self.sp_ssim.setValue(c.ssim_threshold)
         self.sp_clip.setValue(c.clip_threshold)
 
+    def _detect_gpu(self):
+        from deduper import clip_device_info
+        self.lbl_device.setText("偵測中…")
+        QApplication.processEvents()
+        info = clip_device_info()
+        if not info["available"]:
+            self.lbl_device.setText("⚠ " + info["reason"])
+        elif info["cuda"]:
+            self.lbl_device.setText(f"✓ GPU：{info['gpu_name']}  (torch {info['torch_version']})")
+            self.cmb_device.setCurrentIndex(1)
+        else:
+            self.lbl_device.setText("✗ 無 GPU，將用 CPU — " + info["reason"])
+            self.cmb_device.setCurrentIndex(2)
+
     def get_config(self) -> DedupConfig:
+        device = ["auto", "cuda", "cpu"][self.cmb_device.currentIndex()]
         return DedupConfig(
             use_dhash=self.cb_dhash.isChecked(),
             use_phash=self.cb_phash.isChecked(),
@@ -367,6 +400,7 @@ class AlgoPanel(QGroupBox):
             clip_threshold=self.sp_clip.value(),
             hash_size=self.sp_hash_size.value(),
             window_size=self.sp_window.value(),
+            clip_device=device,
         )
 
 

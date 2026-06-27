@@ -24,7 +24,7 @@ from workers import open_video_capture, format_timestamp, format_duration
 
 
 def extract_frames(video_path, output_dir=None, preset="standard",
-                   hash_size=8, jpg_quality=100):
+                   hash_size=8, jpg_quality=100, device="auto"):
     import time
     t0 = time.perf_counter()
     video_path = Path(video_path)
@@ -49,6 +49,7 @@ def extract_frames(video_path, output_dir=None, preset="standard",
 
     cfg = DedupConfig.from_preset(preset)
     cfg.hash_size = hash_size
+    cfg.clip_device = device
 
     print(f"[資訊] 影片：{video_path.name}")
     print(f"[資訊] {w}x{h}  FPS {fps:.2f}  總幀數 {total_frames}")
@@ -70,10 +71,11 @@ def extract_frames(video_path, output_dir=None, preset="standard",
 
     clip_model = None
     if cfg.use_clip:
-        print("[資訊] 載入 CLIP 模型中…（首次使用會下載權重，約 300MB）")
+        print(f"[資訊] 載入 CLIP 模型中…（裝置={cfg.clip_device}，"
+              "首次使用會下載權重，約 300MB）")
         try:
-            clip_model = load_clip_model()
-            print(f"[資訊] CLIP 就緒（device={clip_model.device}）")
+            clip_model = load_clip_model(device=cfg.clip_device)
+            print(f"[資訊] CLIP 就緒（實際裝置={clip_model.device}）")
         except Exception as e:
             print(f"[錯誤] CLIP 載入失敗：{e}")
             cap.release()
@@ -138,9 +140,11 @@ def main():
                    help="演算法預設等級")
     p.add_argument("--hash-size", type=int, default=8)
     p.add_argument("--quality", type=int, default=100)
+    p.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"],
+                   help="CLIP 運算裝置（僅 ultra 等級用）：auto/cuda/cpu")
     a = p.parse_args()
     extract_frames(a.video, output_dir=a.output, preset=a.preset,
-                   hash_size=a.hash_size, jpg_quality=a.quality)
+                   hash_size=a.hash_size, jpg_quality=a.quality, device=a.device)
 
 
 if __name__ == "__main__":

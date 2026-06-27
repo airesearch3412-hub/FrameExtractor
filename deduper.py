@@ -59,6 +59,9 @@ class DedupConfig:
     # 時間視窗：只跟最近 N 張比對 (0 = 全部比)
     window_size: int = 0
 
+    # CLIP 運算裝置："auto"（有 GPU 就用）/ "cuda" / "cpu"
+    clip_device: str = "auto"
+
     @staticmethod
     def from_preset(name: str) -> "DedupConfig":
         name = name.lower()
@@ -245,10 +248,25 @@ class ClipModel:
             ) from e
 
         self._torch = torch
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = self._resolve_device(torch, device)
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name, pretrained=pretrained)
         self.model.eval().to(self.device)
+
+    @staticmethod
+    def _resolve_device(torch, requested: Optional[str]) -> str:
+        """auto → 有 GPU 就用 cuda；明確指定 cuda 但偵測不到就拋明確錯誤。"""
+        if requested in (None, "", "auto"):
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        if requested.startswith("cuda"):
+            if not torch.cuda.is_available():
+                raise RuntimeError(
+                    "你指定使用 GPU (CUDA)，但偵測不到可用的 CUDA 裝置。\n"
+                    "可能原因：未安裝 CUDA 版 PyTorch，或無 NVIDIA GPU / 驅動。\n"
+                    "解法：改選「CPU」或「自動」，或安裝 CUDA 版 PyTorch："
+                    "https://pytorch.org/get-started/locally/")
+            return requested
+        return requested
 
     def encode(self, pil_img: "Image.Image") -> np.ndarray:
         """回傳單張影像的 L2 normalized 向量（numpy float32, shape=(D,)）。"""
@@ -267,11 +285,35 @@ _CLIP_CACHE: dict = {}
 def load_clip_model(model_name: str = "ViT-B-32",
                     pretrained: str = "openai",
                     device: Optional[str] = None) -> ClipModel:
-    """載入（或回傳已快取的）CLIP 模型。"""
+    """載入（或回傳已快取的）CLIP 模型。device: None/"auto"/"cuda"/"cpu"。"""
     key = (model_name, pretrained, device)
     if key not in _CLIP_CACHE:
         _CLIP_CACHE[key] = ClipModel(model_name, pretrained, device)
     return _CLIP_CACHE[key]
+
+
+def clip_device_info() -> dict:
+    """回報 CLIP 可用裝置（不載入模型，只 import torch 偵測）。
+    回傳 {available, cuda, gpu_name, torch_version, reason}。"""
+    info = {"available": False, "cuda": False, "gpu_name": None,
+            "torch_version": None, "reason": ""}
+    try:
+        import torch
+    except ImportError:
+        info["reason"] = "未安裝 torch（pip install torch open-clip-torch）"
+        return info
+    info["available"] = True
+    info["torch_version"] = torch.__version__
+    if torch.cuda.is_available():
+        info["cuda"] = True
+        try:
+            info["gpu_name"] = torch.cuda.get_device_name(0)
+        except Exception:
+            info["gpu_name"] = "CUDA device"
+    else:
+        info["reason"] = ("torch 已安裝但偵測不到 CUDA"
+                          "（多半是裝到 CPU 版 torch，或無 NVIDIA 驅動）")
+    return info
 
 
 # ========== 去重器主類 ==========

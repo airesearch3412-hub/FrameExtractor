@@ -36,6 +36,7 @@ python extract_frames.py "影片.mp4" -o 輸出資料夾 -p precise
 | `-p / --preset` | 演算法等級：`fast` / `standard`(預設) / `precise` / `ultra` |
 | `--hash-size` | 感知雜湊大小（預設 8） |
 | `--quality` | JPG 品質（預設 100） |
+| `--device` | CLIP 運算裝置（僅 `ultra` 用）：`auto`(預設) / `cuda` / `cpu` |
 
 ## 檔案結構
 
@@ -111,6 +112,34 @@ GUI 中點「▼ 進階設定」可自由勾選與調整每個演算法的閾值
 - **直方圖** — HSV 色彩直方圖（H 50 bins、S 60 bins）相關係數比對。
 - **SSIM** — 純 numpy + OpenCV 高斯窗實作的結構相似度（無額外依賴）。
 - **CLIP** — `open-clip-torch`（ViT-B-32 / openai 權重）影像語意向量 + 餘弦相似度；模型於進程內快取，僅 `ultra` 等級才載入。
+
+## GPU 加速（CLIP）
+
+只有 `ultra`（最精準）等級會用到 CLIP，它可在 GPU 上大幅加速。
+
+**選擇裝置**
+
+- **GUI**：去重演算法 →「▼ 進階設定」→「CLIP 裝置」下拉（自動偵測 / GPU (CUDA) / CPU），旁邊的「偵測 GPU」按鈕會即時顯示是否抓到 GPU 與型號。
+- **CLI**：`python extract_frames.py "影片.mp4" -p ultra --device cuda`
+- **預設 `auto`**：偵測到可用的 NVIDIA GPU 就用 GPU，否則自動回退 CPU。指定 `cuda` 卻偵測不到時會明確報錯（不會默默用 CPU）。
+
+**讓 GPU 真的被偵測到**
+
+`pip install torch` 在 Windows 預設裝的是 **CPU 版**，`torch.cuda.is_available()` 會一直是 `False`。要用 GPU 必須裝 **CUDA 版 PyTorch**（依你的 CUDA 版本選 index）：
+
+```bash
+# 例：CUDA 12.1（請依官網 https://pytorch.org/get-started/locally/ 選對版本）
+pip uninstall -y torch
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+```
+
+驗證：
+
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+需要 NVIDIA GPU + 對應驅動；AMD/Intel GPU 不支援 CUDA，請用 CPU。處理時的日誌會印出「實際裝置」讓你確認跑在哪。
 
 ## 已知限制
 

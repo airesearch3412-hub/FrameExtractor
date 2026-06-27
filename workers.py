@@ -142,9 +142,10 @@ class ExtractDedupWorker(QThread):
             clip_model = None
             if self.cfg.use_clip:
                 try:
-                    self.log.emit("▶ 載入 CLIP 模型中…（首次使用會下載權重，約 300MB）")
-                    clip_model = load_clip_model()
-                    self.log.emit(f"  CLIP 就緒（device={clip_model.device}）\n")
+                    self.log.emit(f"▶ 載入 CLIP 模型中…（裝置={self.cfg.clip_device}，"
+                                  "首次使用會下載權重，約 300MB）")
+                    clip_model = load_clip_model(device=self.cfg.clip_device)
+                    self.log.emit(f"  CLIP 就緒（實際裝置={clip_model.device}）\n")
                 except Exception as e:
                     self.error.emit(f"CLIP 載入失敗：{e}")
                     cap.release(); csv_file.close(); dup_file.close()
@@ -364,9 +365,10 @@ class FolderDedupWorker(QThread):
             clip_model = None
             if self.cfg.use_clip:
                 try:
-                    self.log.emit("▶ 載入 CLIP 模型中…（首次使用會下載權重，約 300MB）")
-                    clip_model = load_clip_model()
-                    self.log.emit(f"  CLIP 就緒（device={clip_model.device}）\n")
+                    self.log.emit(f"▶ 載入 CLIP 模型中…（裝置={self.cfg.clip_device}，"
+                                  "首次使用會下載權重，約 300MB）")
+                    clip_model = load_clip_model(device=self.cfg.clip_device)
+                    self.log.emit(f"  CLIP 就緒（實際裝置={clip_model.device}）\n")
                 except Exception as e:
                     self.error.emit(f"CLIP 載入失敗：{e}")
                     rep_file.close()
