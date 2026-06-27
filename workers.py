@@ -10,6 +10,7 @@
 
 import csv
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -30,6 +31,18 @@ def format_timestamp(seconds: float) -> str:
     m = int((seconds % 3600) // 60)
     s = seconds % 60
     return f"{h:02d}:{m:02d}:{s:06.3f}"
+
+
+def format_duration(seconds: float) -> str:
+    """把秒數格式化成易讀的執行時間，如 0.8 秒 / 1 分 23 秒 / 1 時 02 分 05 秒。"""
+    if seconds < 60:
+        return f"{seconds:.1f} 秒"
+    total = int(round(seconds))
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h} 時 {m:02d} 分 {s:02d} 秒"
+    return f"{m} 分 {s:02d} 秒"
 
 
 def cv2_to_qimage(frame_bgr) -> QImage:
@@ -89,6 +102,7 @@ class ExtractDedupWorker(QThread):
 
     def run(self):
         try:
+            t0 = time.perf_counter()
             self.output_dir.mkdir(parents=True, exist_ok=True)
             cap = open_video_capture(str(self.video_path))
             if not cap.isOpened():
@@ -183,10 +197,12 @@ class ExtractDedupWorker(QThread):
             finally:
                 cap.release(); csv_file.close(); dup_file.close()
 
+            elapsed = time.perf_counter() - t0
             rate = (dup / idx * 100) if idx else 0
             summary = (f"影片提取統計摘要\n==================\n"
                        f"影片檔案    : {self.video_path.name}\n"
                        f"處理時間    : {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                       f"執行時間    : {format_duration(elapsed)}\n"
                        f"解析度      : {w} x {h}\n原始 FPS    : {fps:.2f}\n"
                        f"總幀數      : {idx}\n保留幀數    : {saved}\n"
                        f"重複幀數    : {dup}\n寫入失敗    : {failed}\n"
@@ -200,7 +216,7 @@ class ExtractDedupWorker(QThread):
             self.finished_ok.emit({
                 "total": idx, "saved": saved, "duplicates": dup,
                 "write_failed": failed, "dedup_rate": rate,
-                "output_dir": str(self.output_dir),
+                "elapsed": elapsed, "output_dir": str(self.output_dir),
             })
         except Exception as e:
             self.error.emit(str(e))
@@ -231,6 +247,7 @@ class ExtractOnlyWorker(QThread):
 
     def run(self):
         try:
+            t0 = time.perf_counter()
             self.output_dir.mkdir(parents=True, exist_ok=True)
             cap = open_video_capture(str(self.video_path))
             if not cap.isOpened():
@@ -280,11 +297,13 @@ class ExtractOnlyWorker(QThread):
             finally:
                 cap.release(); csv_file.close()
 
-            self.log.emit(f"\n✔ 完成：共 {idx} 幀，輸出 {saved} 張，失敗 {failed}")
+            elapsed = time.perf_counter() - t0
+            self.log.emit(f"\n✔ 完成：共 {idx} 幀，輸出 {saved} 張，失敗 {failed}"
+                          f"，執行時間 {format_duration(elapsed)}")
             self.stats_update.emit(saved, idx)
             self.finished_ok.emit({
                 "total": idx, "saved": saved, "write_failed": failed,
-                "output_dir": str(self.output_dir),
+                "elapsed": elapsed, "output_dir": str(self.output_dir),
             })
         except Exception as e:
             self.error.emit(str(e))
@@ -315,6 +334,7 @@ class FolderDedupWorker(QThread):
 
     def run(self):
         try:
+            t0 = time.perf_counter()
             if not self.input_dir.exists():
                 self.error.emit(f"資料夾不存在：{self.input_dir}")
                 return
@@ -403,10 +423,12 @@ class FolderDedupWorker(QThread):
 
             rep_file.close()
 
+            elapsed = time.perf_counter() - t0
             summary_path = self.input_dir / "_dedup_summary.txt"
             rate = (dup / total * 100) if total else 0
             summary = (f"資料夾去重摘要\n==================\n"
                        f"處理時間  : {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+                       f"執行時間  : {format_duration(elapsed)}\n"
                        f"來源資料夾: {self.input_dir}\n"
                        f"圖片總數  : {total}\n保留      : {kept}\n"
                        f"重複      : {dup}\n讀取失敗  : {failed}\n"
@@ -418,7 +440,7 @@ class FolderDedupWorker(QThread):
             self.stats_update.emit(kept, dup, total)
             self.finished_ok.emit({
                 "total": total, "saved": kept, "duplicates": dup,
-                "write_failed": failed,
+                "write_failed": failed, "elapsed": elapsed,
                 "dedup_rate": rate, "output_dir": str(self.input_dir),
             })
         except Exception as e:
@@ -453,6 +475,7 @@ class BatchWorker(QThread):
 
     def run(self):
         try:
+            t0 = time.perf_counter()
             self.output_root.mkdir(parents=True, exist_ok=True)
             n = len(self.video_paths)
             self.log.emit(f"▶ 批次任務：{n} 個影片  模式：{self.mode}\n")
@@ -493,12 +516,14 @@ class BatchWorker(QThread):
 
                 self.progress.emit(i + 1, n)
 
+            agg["elapsed"] = time.perf_counter() - t0
             self.log.emit(
                 f"\n══════ 批次完成 ══════\n"
                 f"處理影片數：{agg['videos']}\n"
                 f"總幀數    ：{agg['frames_total']:,}\n"
                 f"保留      ：{agg['saved_total']:,}\n"
                 f"重複      ：{agg['dup_total']:,}\n"
+                f"執行時間  ：{format_duration(agg['elapsed'])}\n"
                 f"輸出根目錄：{self.output_root}\n"
             )
             self.finished_ok.emit(agg)

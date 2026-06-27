@@ -20,11 +20,13 @@ from tqdm import tqdm
 from deduper import (
     DedupConfig, Deduper, compute_features, imwrite_unicode, load_clip_model,
 )
-from workers import open_video_capture, format_timestamp
+from workers import open_video_capture, format_timestamp, format_duration
 
 
 def extract_frames(video_path, output_dir=None, preset="standard",
                    hash_size=8, jpg_quality=100):
+    import time
+    t0 = time.perf_counter()
     video_path = Path(video_path)
     if not video_path.exists():
         print(f"[錯誤] 找不到影片：{video_path}")
@@ -111,10 +113,12 @@ def extract_frames(video_path, output_dir=None, preset="standard",
         pbar.close(); cap.release()
         csv_file.close(); dup_file.close()
 
+    elapsed = time.perf_counter() - t0
     rate = (duplicate / idx * 100) if idx else 0
     summary = (f"影片提取統計摘要\n==================\n"
                f"影片檔案    : {video_path.name}\n"
                f"處理時間    : {datetime.now():%Y-%m-%d %H:%M:%S}\n"
+               f"執行時間    : {format_duration(elapsed)}\n"
                f"解析度      : {w} x {h}\n原始 FPS    : {fps:.2f}\n"
                f"總幀數      : {idx}\n保留幀數    : {saved}\n"
                f"重複幀數    : {duplicate}\n寫入失敗    : {failed}\n"

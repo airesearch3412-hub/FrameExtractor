@@ -35,6 +35,7 @@ from PyQt6.QtWidgets import (
 from deduper import DedupConfig
 from workers import (
     ExtractDedupWorker, ExtractOnlyWorker, FolderDedupWorker, BatchWorker,
+    format_duration,
 )
 
 
@@ -528,10 +529,13 @@ class TabExtractDedup(QWidget):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
         self.mainwin.set_status("已完成", "#3fb950")
-        QMessageBox.information(self, "完成",
-            f"✔ 完成\n\n總幀數：{s['total']:,}\n保留：{s['saved']:,}\n"
-            f"重複：{s['duplicates']:,}\n去重率：{s['dedup_rate']:.2f}%\n\n"
-            f"輸出：{s['output_dir']}")
+        big_info(self, "完成", [
+            ("總幀數", f"{s['total']:,}"),
+            ("保留", f"{s['saved']:,}"),
+            ("重複", f"{s['duplicates']:,}"),
+            ("去重率", f"{s['dedup_rate']:.2f}%"),
+            ("執行時間", format_duration(s.get("elapsed", 0))),
+        ], footer=s["output_dir"])
 
     def _on_err(self, msg):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
@@ -649,9 +653,11 @@ class TabExtractOnly(QWidget):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
         self.mainwin.set_status("已完成", "#3fb950")
-        QMessageBox.information(self, "完成",
-            f"✔ 完成\n\n總幀數：{s['total']:,}\n已輸出：{s['saved']:,}\n\n"
-            f"輸出：{s['output_dir']}")
+        big_info(self, "完成", [
+            ("總幀數", f"{s['total']:,}"),
+            ("已輸出", f"{s['saved']:,}"),
+            ("執行時間", format_duration(s.get("elapsed", 0))),
+        ], footer=s["output_dir"])
 
     def _err(self, msg):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
@@ -761,9 +767,13 @@ class TabFolderDedup(QWidget):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
         self.mainwin.set_status("已完成", "#3fb950")
-        QMessageBox.information(self, "完成",
-            f"✔ 完成\n\n總圖片：{s['total']:,}\n保留：{s['saved']:,}\n"
-            f"重複：{s['duplicates']:,}\n去重率：{s['dedup_rate']:.2f}%")
+        big_info(self, "完成", [
+            ("總圖片", f"{s['total']:,}"),
+            ("保留", f"{s['saved']:,}"),
+            ("重複", f"{s['duplicates']:,}"),
+            ("去重率", f"{s['dedup_rate']:.2f}%"),
+            ("執行時間", format_duration(s.get("elapsed", 0))),
+        ], footer=s.get("output_dir", ""))
 
     def _err(self, msg):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
@@ -897,9 +907,13 @@ class TabBatch(QWidget):
         self.sp.set_kpi(0, f"{agg['videos']:,}")
         self.sp.set_kpi(1, f"{agg['saved_total']:,}")
         self.sp.set_kpi(2, f"{agg['dup_total']:,}")
-        QMessageBox.information(self, "完成",
-            f"✔ 批次完成\n\n處理影片：{agg['videos']}\n"
-            f"保留總計：{agg['saved_total']:,}\n重複總計：{agg['dup_total']:,}")
+        big_info(self, "批次完成", [
+            ("處理影片", f"{agg['videos']:,}"),
+            ("總幀數", f"{agg.get('frames_total', 0):,}"),
+            ("保留總計", f"{agg['saved_total']:,}"),
+            ("重複總計", f"{agg['dup_total']:,}"),
+            ("執行時間", format_duration(agg.get("elapsed", 0))),
+        ], footer=str(self.out_edit.text().strip()))
 
     def _err(self, msg):
         self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
@@ -919,6 +933,33 @@ def open_folder(path):
         subprocess.Popen(["open", path])
     else:
         subprocess.Popen(["xdg-open", path])
+
+
+def big_info(parent, title, rows, footer=""):
+    """較大的完成對話框。
+    rows: [(標籤, 值)] 會排成兩欄表格；footer 為底部備註（例如輸出路徑）。"""
+    body = "".join(
+        f"<tr>"
+        f"<td style='color:#8b949e; padding:4px 20px 4px 0; font-size:14px'>{k}</td>"
+        f"<td style='font-size:16px; font-weight:700'>{v}</td>"
+        f"</tr>"
+        for k, v in rows
+    )
+    html = (
+        f"<div style='font-size:17px; font-weight:700; margin-bottom:10px'>✔ {title}</div>"
+        f"<table cellspacing='0'>{body}</table>"
+    )
+    if footer:
+        html += (f"<div style='color:#8b949e; font-size:12px; margin-top:14px'>"
+                 f"輸出位置<br><span style='color:#58a6ff'>{footer}</span></div>")
+    box = QMessageBox(parent)
+    box.setWindowTitle(title)
+    box.setIcon(QMessageBox.Icon.Information)
+    box.setTextFormat(Qt.TextFormat.RichText)
+    box.setText(html)
+    # 撐寬撐高：min-width 作用在內部 QLabel，整個對話框會跟著放大
+    box.setStyleSheet("QMessageBox QLabel { min-width: 460px; min-height: 120px; }")
+    box.exec()
 
 
 PREF_FILE = Path.home() / ".frameextractor_prefs.json"
