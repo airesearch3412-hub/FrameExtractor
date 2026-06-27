@@ -1,8 +1,13 @@
+# -*- coding: utf-8 -*-
 """
-影片提取 JPG (品質 100%) + pHash 去重 GUI 工具
-使用 PyQt6 介面（深色現代風 UI/UX）
+FrameExtractor v2 · 影片提取 + 智慧去重工具
 
-★ 已修正：支援中文路徑（影片讀取與 JPG 寫入）
+★ 主要功能
+  - 選單列：檔案 / 編輯 / 檢視 / 說明
+  - 四個分頁：提取+去重 / 只提取 / 僅去重資料夾 / 批次處理
+  - 多演算法分層去重（dHash / pHash / 直方圖 / SSIM / CLIP）
+  - 預設等級（快速/標準/精準/最精準）+ 進階設定面板
+  - 支援中文路徑、深色現代 UI
 
 依賴：
     pip install opencv-python Pillow imagehash PyQt6 numpy
@@ -10,70 +15,31 @@
     python extract_frames_gui.py
 """
 
-import csv
+import json
 import os
 import subprocess
 import sys
-from datetime import datetime
+import webbrowser
 from pathlib import Path
 
-import cv2
-import imagehash
-import numpy as np
-from PIL import Image
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
-from PyQt6.QtGui import QPixmap, QImage, QPalette, QColor
+from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtGui import QAction, QPalette, QColor, QPixmap, QKeySequence, QImage
 from PyQt6.QtWidgets import (
-    QApplication, QCheckBox, QFileDialog, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-    QSpinBox, QTextEdit, QVBoxLayout, QWidget, QSizePolicy,
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
+    QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
+    QListWidgetItem, QMainWindow, QMenu, QMenuBar, QMessageBox, QProgressBar,
+    QPushButton, QSizePolicy, QSpinBox, QStatusBar, QTabWidget, QTextEdit,
+    QToolButton, QVBoxLayout, QWidget,
+)
+
+from deduper import DedupConfig
+from workers import (
+    ExtractDedupWorker, ExtractOnlyWorker, FolderDedupWorker, BatchWorker,
 )
 
 
-# ===================== Unicode 路徑相容函式 =====================
-def imwrite_unicode(path: str, img, params=None) -> bool:
-    """支援中文路徑寫入影像。OpenCV 的 cv2.imwrite 在 Windows 對中文路徑
-    會靜默失敗，這裡改用 imencode + numpy.tofile bypass。"""
-    try:
-        ext = os.path.splitext(path)[1]  # 例如 ".jpg"
-        ok, buf = cv2.imencode(ext, img, params or [])
-        if not ok:
-            return False
-        buf.tofile(path)
-        return True
-    except Exception:
-        return False
-
-
-def open_video_capture(video_path: str):
-    """以支援中文路徑的方式開啟 VideoCapture。
-    若直接開失敗，Windows 下嘗試 8.3 短檔名。"""
-    cap = cv2.VideoCapture(video_path)
-    if cap.isOpened():
-        return cap
-    cap.release()
-    if sys.platform.startswith("win"):
-        try:
-            import ctypes
-            from ctypes import wintypes
-            GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
-            GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-            GetShortPathNameW.restype = wintypes.DWORD
-            buf = ctypes.create_unicode_buffer(260)
-            n = GetShortPathNameW(video_path, buf, 260)
-            if n:
-                short_path = buf.value
-                cap2 = cv2.VideoCapture(short_path)
-                if cap2.isOpened():
-                    return cap2
-                cap2.release()
-        except Exception:
-            pass
-    return cv2.VideoCapture(video_path)
-
-
-# ===================== 樣式 =====================
-STYLESHEET = """
+# ===================== 主題樣式 =====================
+DARK_QSS = """
 * { font-family: "Segoe UI", "Microsoft JhengHei", "PingFang TC", sans-serif; }
 
 QMainWindow, QWidget#root { background: #0f1419; color: #e6edf3; }
@@ -83,25 +49,38 @@ QLabel#subtitle { font-size: 12px; color: #8b949e; }
 QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: #c9d1d9; padding-bottom: 4px; }
 QLabel#fieldLabel { font-size: 12px; color: #8b949e; }
 QLabel#kpiLabel { font-size: 11px; color: #8b949e; letter-spacing: 1px; }
-QLabel#kpiValue { font-size: 24px; font-weight: 700; color: #ffffff; }
-QLabel#kpiValueAccent { font-size: 24px; font-weight: 700; color: #58a6ff; }
-QLabel#kpiValueGood   { font-size: 24px; font-weight: 700; color: #3fb950; }
-QLabel#kpiValueWarn   { font-size: 24px; font-weight: 700; color: #f0883e; }
+QLabel#kpiValue { font-size: 22px; font-weight: 700; color: #ffffff; }
+QLabel#kpiValueAccent { font-size: 22px; font-weight: 700; color: #58a6ff; }
+QLabel#kpiValueGood   { font-size: 22px; font-weight: 700; color: #3fb950; }
+QLabel#kpiValueWarn   { font-size: 22px; font-weight: 700; color: #f0883e; }
 
-QFrame#card { background: #161b22; border: 1px solid #30363d; border-radius: 12px; }
+QFrame#card, QGroupBox { background: #161b22; border: 1px solid #30363d; border-radius: 12px; }
 QFrame#kpiCard { background: #161b22; border: 1px solid #30363d; border-radius: 10px; }
 QFrame#previewFrame { background: #0d1117; border: 1px solid #30363d; border-radius: 10px; }
 
-QLineEdit, QSpinBox {
+QGroupBox {
+    margin-top: 14px; padding-top: 12px; font-weight: 600; color: #c9d1d9;
+}
+QGroupBox::title {
+    subcontrol-origin: margin; left: 12px; padding: 0 6px;
+    color: #8b949e;
+}
+
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     background: #0d1117; color: #e6edf3; border: 1px solid #30363d;
-    border-radius: 8px; padding: 8px 10px;
+    border-radius: 8px; padding: 6px 10px;
     selection-background-color: #1f6feb;
 }
-QLineEdit:focus, QSpinBox:focus { border: 1px solid #1f6feb; }
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border: 1px solid #1f6feb; }
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background: #161b22; color: #e6edf3; border: 1px solid #30363d;
+    selection-background-color: #1f6feb;
+}
 
 QPushButton {
     background: #21262d; color: #e6edf3; border: 1px solid #30363d;
-    border-radius: 8px; padding: 8px 16px; font-weight: 500;
+    border-radius: 8px; padding: 7px 14px; font-weight: 500;
 }
 QPushButton:hover  { background: #30363d; border-color: #6e7681; }
 QPushButton:pressed{ background: #1c2128; }
@@ -111,7 +90,6 @@ QPushButton#primary {
     background: #238636; border: 1px solid #2ea043; color: #ffffff; font-weight: 600;
 }
 QPushButton#primary:hover    { background: #2ea043; }
-QPushButton#primary:pressed  { background: #1f7a30; }
 QPushButton#primary:disabled { background: #1b3a23; color: #6e7681; border-color: #21392a; }
 
 QPushButton#danger {
@@ -122,7 +100,7 @@ QPushButton#danger:disabled  { color: #6e7681; border-color: #30363d; }
 
 QProgressBar {
     background: #0d1117; border: 1px solid #30363d; border-radius: 8px;
-    height: 22px; text-align: center; color: #e6edf3; font-weight: 600;
+    height: 20px; text-align: center; color: #e6edf3; font-weight: 600;
 }
 QProgressBar::chunk {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -143,540 +121,1031 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked { background: #1f6feb; border-color: #1f6feb; }
 
+QListWidget {
+    background: #0d1117; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 8px; padding: 4px;
+}
+QListWidget::item { padding: 6px; border-radius: 4px; }
+QListWidget::item:selected { background: #1f6feb; color: #ffffff; }
+
+QTabWidget::pane { border: 1px solid #30363d; border-radius: 10px; top: -1px; background: #0f1419; }
+QTabBar::tab {
+    background: #161b22; color: #8b949e; padding: 9px 18px;
+    border: 1px solid #30363d; border-bottom: none;
+    border-top-left-radius: 8px; border-top-right-radius: 8px;
+    margin-right: 2px; font-weight: 500;
+}
+QTabBar::tab:selected { background: #0f1419; color: #58a6ff; border-bottom: 2px solid #1f6feb; }
+QTabBar::tab:hover:!selected { background: #21262d; color: #e6edf3; }
+
+QMenuBar { background: #161b22; color: #e6edf3; border-bottom: 1px solid #30363d; }
+QMenuBar::item { padding: 6px 12px; background: transparent; }
+QMenuBar::item:selected { background: #21262d; }
+QMenu { background: #161b22; color: #e6edf3; border: 1px solid #30363d; padding: 4px; }
+QMenu::item { padding: 6px 24px; border-radius: 4px; }
+QMenu::item:selected { background: #1f6feb; }
+QMenu::separator { height: 1px; background: #30363d; margin: 4px 0; }
+
+QStatusBar { background: #161b22; color: #8b949e; border-top: 1px solid #30363d; }
+
+QToolButton {
+    background: #21262d; color: #c9d1d9; border: 1px solid #30363d;
+    border-radius: 6px; padding: 4px 8px;
+}
+QToolButton:hover { background: #30363d; }
+
 QToolTip {
     background: #161b22; color: #e6edf3;
     border: 1px solid #30363d; border-radius: 6px; padding: 4px;
 }
 """
 
-
-def format_timestamp(seconds: float) -> str:
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h:02d}:{m:02d}:{s:06.3f}"
-
-
-def make_card(layout_cls=QVBoxLayout, margin=16, spacing=10):
-    card = QFrame()
-    card.setObjectName("card")
-    lay = layout_cls(card)
-    lay.setContentsMargins(margin, margin, margin, margin)
-    lay.setSpacing(spacing)
-    return card, lay
-
-
-# ===================== 背景處理執行緒 =====================
-class ExtractWorker(QThread):
-    progress = pyqtSignal(int, int)
-    log = pyqtSignal(str)
-    preview = pyqtSignal(QImage, int)
-    stats_update = pyqtSignal(int, int, int)
-    finished_ok = pyqtSignal(dict)
-    error = pyqtSignal(str)
-
-    def __init__(self, video_path, output_dir, threshold, hash_size,
-                 jpg_quality=100, preview_every=30, parent=None):
-        super().__init__(parent)
-        self.video_path = Path(video_path)
-        self.output_dir = Path(output_dir)
-        self.threshold = threshold
-        self.hash_size = hash_size
-        self.jpg_quality = jpg_quality
-        self.preview_every = preview_every
-        self._stop = False
-
-    def stop(self):
-        self._stop = True
-
-    def run(self):
-        try:
-            self.output_dir.mkdir(parents=True, exist_ok=True)
-            cap = open_video_capture(str(self.video_path))
-            if not cap.isOpened():
-                self.error.emit(f"無法開啟影片：{self.video_path}")
-                return
-
-            fps = cap.get(cv2.CAP_PROP_FPS) or 0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
-            self.log.emit(f"▶ 影片：{self.video_path.name}")
-            self.log.emit(f"  解析度 {width}x{height}  |  FPS {fps:.2f}  |  總幀數 {total_frames}")
-            self.log.emit(f"▶ 輸出：{self.output_dir}")
-            self.log.emit(f"▶ pHash 閾值 {self.threshold}  |  Hash 大小 {self.hash_size}  |  JPG 品質 {self.jpg_quality}")
-            self.log.emit("── 開始處理 ──\n")
-
-            csv_path = self.output_dir / "frames_report.csv"
-            dup_path = self.output_dir / "duplicates.csv"
-            summary_path = self.output_dir / "summary.txt"
-
-            csv_file = open(csv_path, "w", newline="", encoding="utf-8-sig")
-            csv_writer = csv.writer(csv_file)
-            csv_writer.writerow([
-                "frame_index", "timestamp", "filename", "phash",
-                "status", "duplicate_of", "min_distance"
-            ])
-
-            dup_file = open(dup_path, "w", newline="", encoding="utf-8-sig")
-            dup_writer = csv.writer(dup_file)
-            dup_writer.writerow([
-                "frame_index", "timestamp", "duplicate_of_frame",
-                "duplicate_of_filename", "hamming_distance"
-            ])
-
-            seen_hashes = []
-            saved_count = 0
-            duplicate_count = 0
-            write_fail_count = 0
-            frame_index = 0
-
-            try:
-                while True:
-                    if self._stop:
-                        self.log.emit("⏹ [使用者中止]")
-                        break
-
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-
-                    timestamp_sec = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                    timestamp_str = format_timestamp(timestamp_sec)
-
-                    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    pil_img = Image.fromarray(frame_rgb)
-                    phash = imagehash.phash(pil_img, hash_size=self.hash_size)
-
-                    is_duplicate = False
-                    duplicate_of = None
-                    duplicate_filename = None
-                    min_distance = None
-
-                    for prev_idx, prev_hash, prev_name in seen_hashes:
-                        dist = phash - prev_hash
-                        if min_distance is None or dist < min_distance:
-                            min_distance = dist
-                            duplicate_of = prev_idx
-                            duplicate_filename = prev_name
-                        if dist <= self.threshold:
-                            is_duplicate = True
-                            break
-
-                    if is_duplicate:
-                        duplicate_count += 1
-                        csv_writer.writerow([
-                            frame_index, timestamp_str, "", str(phash),
-                            "duplicate", duplicate_of, min_distance
-                        ])
-                        dup_writer.writerow([
-                            frame_index, timestamp_str, duplicate_of,
-                            duplicate_filename, min_distance
-                        ])
-                    else:
-                        filename = f"frame_{frame_index:08d}.jpg"
-                        filepath = self.output_dir / filename
-                        # ★ 使用 imwrite_unicode 支援中文路徑
-                        ok = imwrite_unicode(
-                            str(filepath), frame,
-                            [cv2.IMWRITE_JPEG_QUALITY, int(self.jpg_quality)]
-                        )
-                        if ok:
-                            seen_hashes.append((frame_index, phash, filename))
-                            saved_count += 1
-                            csv_writer.writerow([
-                                frame_index, timestamp_str, filename, str(phash),
-                                "saved", "",
-                                min_distance if min_distance is not None else ""
-                            ])
-                            if saved_count % self.preview_every == 1:
-                                qimg = self._cv2_to_qimage(frame_rgb)
-                                self.preview.emit(qimg, frame_index)
-                        else:
-                            write_fail_count += 1
-                            csv_writer.writerow([
-                                frame_index, timestamp_str, "", str(phash),
-                                "write_failed", "", ""
-                            ])
-                            if write_fail_count <= 3:
-                                self.log.emit(f"⚠ 寫入失敗：{filepath}")
-
-                    frame_index += 1
-                    if total_frames > 0:
-                        self.progress.emit(frame_index, total_frames)
-                    if frame_index % 10 == 0:
-                        self.stats_update.emit(saved_count, duplicate_count, frame_index)
-            finally:
-                cap.release()
-                csv_file.close()
-                dup_file.close()
-
-            total_processed = frame_index
-            dedup_rate = (duplicate_count / total_processed * 100) if total_processed else 0
-
-            summary = (
-                f"影片提取統計摘要\n"
-                f"==================\n"
-                f"影片檔案    : {self.video_path.name}\n"
-                f"處理時間    : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-                f"解析度      : {width} x {height}\n"
-                f"原始 FPS    : {fps:.2f}\n"
-                f"總幀數      : {total_processed}\n"
-                f"保留幀數    : {saved_count}\n"
-                f"重複幀數    : {duplicate_count}\n"
-                f"寫入失敗    : {write_fail_count}\n"
-                f"去重率      : {dedup_rate:.2f}%\n"
-                f"pHash 閾值  : {self.threshold}\n"
-                f"JPG 品質    : {self.jpg_quality}\n"
-                f"輸出資料夾  : {self.output_dir}\n"
-                f"CSV 報表    : {csv_path.name}\n"
-                f"重複清單    : {dup_path.name}\n"
-            )
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write(summary)
-
-            self.log.emit("\n✔ 處理完成")
-            self.log.emit(summary)
-            self.stats_update.emit(saved_count, duplicate_count, total_processed)
-            self.finished_ok.emit({
-                "total": total_processed,
-                "saved": saved_count,
-                "duplicates": duplicate_count,
-                "write_failed": write_fail_count,
-                "dedup_rate": dedup_rate,
-                "output_dir": str(self.output_dir),
-            })
-        except Exception as e:
-            self.error.emit(str(e))
-
-    @staticmethod
-    def _cv2_to_qimage(frame_rgb):
-        h, w, ch = frame_rgb.shape
-        bytes_per_line = ch * w
-        return QImage(frame_rgb.data, w, h, bytes_per_line,
-                      QImage.Format.Format_RGB888).copy()
+LIGHT_QSS = """
+* { font-family: "Segoe UI", "Microsoft JhengHei", sans-serif; color: #1f2328; }
+QMainWindow, QWidget#root { background: #f6f8fa; }
+QFrame#card, QGroupBox { background: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; }
+QLabel#title { font-size: 22px; font-weight: 700; color: #1f2328; }
+QLabel#subtitle { font-size: 12px; color: #57606a; }
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+    background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px;
+}
+QPushButton {
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px; padding: 7px 14px;
+}
+QPushButton:hover { background: #eaeef2; }
+QPushButton#primary { background: #2da44e; color: white; border-color: #2c974b; }
+QPushButton#primary:hover { background: #2c974b; }
+QPushButton#danger { background: #ffffff; color: #cf222e; border-color: #cf222e; }
+QProgressBar { background: #eaeef2; border: 1px solid #d0d7de; border-radius: 8px; text-align: center; }
+QProgressBar::chunk { background: #1f6feb; border-radius: 6px; }
+QTextEdit { background: #ffffff; border: 1px solid #d0d7de; border-radius: 10px; font-family: Consolas, monospace; }
+QTabWidget::pane { border: 1px solid #d0d7de; border-radius: 10px; background: #ffffff; }
+QTabBar::tab { background: #f6f8fa; padding: 9px 18px; border: 1px solid #d0d7de; border-bottom: none; }
+QTabBar::tab:selected { background: #ffffff; color: #0969da; border-bottom: 2px solid #0969da; }
+QMenuBar { background: #ffffff; border-bottom: 1px solid #d0d7de; }
+QMenu { background: #ffffff; border: 1px solid #d0d7de; }
+QStatusBar { background: #ffffff; color: #57606a; border-top: 1px solid #d0d7de; }
+"""
 
 
+# ===================== 工具元件 =====================
 class KpiCard(QFrame):
-    def __init__(self, label: str, value: str = "—", value_class: str = "kpiValue"):
+    def __init__(self, label, value="—", color_class="kpiValue"):
         super().__init__()
         self.setObjectName("kpiCard")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(14, 12, 14, 12)
-        lay.setSpacing(4)
-        self.lbl = QLabel(label)
-        self.lbl.setObjectName("kpiLabel")
-        self.val = QLabel(value)
-        self.val.setObjectName(value_class)
-        lay.addWidget(self.lbl)
-        lay.addWidget(self.val)
+        lay.setContentsMargins(12, 10, 12, 10); lay.setSpacing(2)
+        self.lbl = QLabel(label); self.lbl.setObjectName("kpiLabel")
+        self.val = QLabel(value); self.val.setObjectName(color_class)
+        lay.addWidget(self.lbl); lay.addWidget(self.val)
 
-    def set_value(self, text: str):
-        self.val.setText(text)
+    def set_value(self, text): self.val.setText(text)
 
 
-class MainWindow(QMainWindow):
-    def __init__(self):
+def section_label(text):
+    lbl = QLabel(text); lbl.setObjectName("sectionTitle"); return lbl
+
+
+def field_label(text):
+    lbl = QLabel(text); lbl.setObjectName("fieldLabel"); return lbl
+
+
+def make_card(margin=14, spacing=10):
+    f = QFrame(); f.setObjectName("card")
+    lay = QVBoxLayout(f)
+    lay.setContentsMargins(margin, margin, margin, margin)
+    lay.setSpacing(spacing)
+    return f, lay
+
+
+# ===================== 演算法設定面板 =====================
+class AlgoPanel(QGroupBox):
+    """下拉預設等級 + 進階設定面板（可摺疊）"""
+    def __init__(self, title="去重演算法"):
+        super().__init__(title)
+        self.advanced_visible = False
+        self._build()
+
+    def _build(self):
+        v = QVBoxLayout(self)
+        v.setContentsMargins(14, 18, 14, 14); v.setSpacing(10)
+
+        top = QHBoxLayout()
+        top.addWidget(field_label("預設等級"))
+        self.preset = QComboBox()
+        self.preset.addItems(["快速（dHash）", "標準（dHash+pHash）",
+                              "精準（+直方圖+SSIM）", "最精準（+CLIP，需 PyTorch）"])
+        self.preset.setCurrentIndex(1)
+        self.preset.currentIndexChanged.connect(self._apply_preset)
+        top.addWidget(self.preset, 1)
+
+        self.adv_btn = QToolButton()
+        self.adv_btn.setText("▼ 進階設定")
+        self.adv_btn.setCheckable(True)
+        self.adv_btn.toggled.connect(self._toggle_advanced)
+        top.addWidget(self.adv_btn)
+        v.addLayout(top)
+
+        # 進階面板
+        self.adv = QFrame(); self.adv.setObjectName("card")
+        adv_l = QGridLayout(self.adv)
+        adv_l.setContentsMargins(10, 10, 10, 10)
+        adv_l.setHorizontalSpacing(14); adv_l.setVerticalSpacing(6)
+
+        # checkbox 啟用
+        self.cb_dhash = QCheckBox("dHash（連續幀快篩）")
+        self.cb_phash = QCheckBox("pHash（DCT 感知）")
+        self.cb_hist  = QCheckBox("直方圖（色彩分布）")
+        self.cb_ssim  = QCheckBox("SSIM（結構相似）")
+        self.cb_clip  = QCheckBox("CLIP（AI 語意，慢）")
+        for r, cb in enumerate([self.cb_dhash, self.cb_phash, self.cb_hist,
+                                self.cb_ssim, self.cb_clip]):
+            adv_l.addWidget(cb, r, 0)
+
+        # 閾值
+        self.sp_dhash = QSpinBox(); self.sp_dhash.setRange(0, 64); self.sp_dhash.setValue(5)
+        self.sp_phash = QSpinBox(); self.sp_phash.setRange(0, 64); self.sp_phash.setValue(5)
+        self.sp_hist  = QDoubleSpinBox(); self.sp_hist.setRange(0, 1); self.sp_hist.setDecimals(2)
+        self.sp_hist.setSingleStep(0.01); self.sp_hist.setValue(0.95)
+        self.sp_ssim  = QDoubleSpinBox(); self.sp_ssim.setRange(0, 1); self.sp_ssim.setDecimals(2)
+        self.sp_ssim.setSingleStep(0.01); self.sp_ssim.setValue(0.92)
+        self.sp_clip  = QDoubleSpinBox(); self.sp_clip.setRange(0, 1); self.sp_clip.setDecimals(2)
+        self.sp_clip.setSingleStep(0.01); self.sp_clip.setValue(0.95)
+        for r, (lab, sp) in enumerate([
+            ("閾值 (距離≤)", self.sp_dhash), ("閾值 (距離≤)", self.sp_phash),
+            ("閾值 (相關≥)", self.sp_hist),  ("閾值 (SSIM≥)", self.sp_ssim),
+            ("閾值 (cos≥)", self.sp_clip),
+        ]):
+            adv_l.addWidget(field_label(lab), r, 1)
+            adv_l.addWidget(sp, r, 2)
+
+        # hash 大小 / 視窗
+        adv_l.addWidget(field_label("Hash 大小"), 5, 0)
+        self.sp_hash_size = QSpinBox(); self.sp_hash_size.setRange(4, 32); self.sp_hash_size.setValue(8)
+        adv_l.addWidget(self.sp_hash_size, 5, 1)
+        adv_l.addWidget(field_label("時間視窗 (0=全比)"), 5, 2)
+        self.sp_window = QSpinBox(); self.sp_window.setRange(0, 99999); self.sp_window.setValue(0)
+        adv_l.addWidget(self.sp_window, 5, 3)
+
+        self.adv.setVisible(False)
+        v.addWidget(self.adv)
+
+        # 套用初始 preset
+        self._apply_preset(1)
+
+    def _toggle_advanced(self, checked):
+        self.advanced_visible = checked
+        self.adv.setVisible(checked)
+        self.adv_btn.setText("▲ 隱藏進階" if checked else "▼ 進階設定")
+
+    def _apply_preset(self, i):
+        name = ["fast", "standard", "precise", "ultra"][i]
+        c = DedupConfig.from_preset(name)
+        self.cb_dhash.setChecked(c.use_dhash)
+        self.cb_phash.setChecked(c.use_phash)
+        self.cb_hist.setChecked(c.use_histogram)
+        self.cb_ssim.setChecked(c.use_ssim)
+        self.cb_clip.setChecked(c.use_clip)
+        self.sp_dhash.setValue(c.dhash_threshold)
+        self.sp_phash.setValue(c.phash_threshold)
+        self.sp_hist.setValue(c.hist_threshold)
+        self.sp_ssim.setValue(c.ssim_threshold)
+        self.sp_clip.setValue(c.clip_threshold)
+
+    def get_config(self) -> DedupConfig:
+        return DedupConfig(
+            use_dhash=self.cb_dhash.isChecked(),
+            use_phash=self.cb_phash.isChecked(),
+            use_histogram=self.cb_hist.isChecked(),
+            use_ssim=self.cb_ssim.isChecked(),
+            use_clip=self.cb_clip.isChecked(),
+            dhash_threshold=self.sp_dhash.value(),
+            phash_threshold=self.sp_phash.value(),
+            hist_threshold=self.sp_hist.value(),
+            ssim_threshold=self.sp_ssim.value(),
+            clip_threshold=self.sp_clip.value(),
+            hash_size=self.sp_hash_size.value(),
+            window_size=self.sp_window.value(),
+        )
+
+
+# ===================== 共用：預覽 + KPI + 日誌 =====================
+class StatsAndPreview(QWidget):
+    def __init__(self, kpi_labels=("總幀數", "保留", "重複", "去重率")):
         super().__init__()
-        self.setWindowTitle("FrameExtractor · 影片逐幀提取與去重")
-        self.resize(1100, 760)
-        self.setMinimumSize(QSize(960, 680))
+        v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0); v.setSpacing(10)
+
+        # KPI
+        kpi_row = QHBoxLayout(); kpi_row.setSpacing(10)
+        classes = ["kpiValue", "kpiValueGood", "kpiValueWarn", "kpiValueAccent"]
+        self.kpis = []
+        for lab, cls in zip(kpi_labels, classes):
+            k = KpiCard(lab, "—", cls); kpi_row.addWidget(k, 1); self.kpis.append(k)
+        v.addLayout(kpi_row)
+
+        # 預覽 + 日誌
+        bottom = QHBoxLayout(); bottom.setSpacing(10)
+        pcard, pl = make_card(12, 6)
+        pl.addWidget(section_label("即時預覽"))
+        self.preview = QLabel("尚未開始")
+        self.preview.setObjectName("previewFrame")
+        self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.preview.setMinimumHeight(220)
+        self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.preview.setStyleSheet("background:#0d1117;color:#6e7681;border:1px solid #30363d;border-radius:10px;")
+        pl.addWidget(self.preview, 1)
+        bottom.addWidget(pcard, 1)
+
+        lcard, ll = make_card(12, 6)
+        ll.addWidget(section_label("處理日誌"))
+        self.log = QTextEdit(); self.log.setReadOnly(True)
+        self.log.setPlaceholderText("等待開始…")
+        ll.addWidget(self.log, 1)
+        bottom.addWidget(lcard, 1)
+        v.addLayout(bottom, 1)
+
+    def set_kpi(self, idx, text):
+        self.kpis[idx].set_value(text)
+
+    def reset(self):
+        for k in self.kpis:
+            k.set_value("0")
+        self.log.clear()
+        self.preview.setText("處理中…")
+        self.preview.setPixmap(QPixmap())
+
+    def append_log(self, text):
+        self.log.append(text)
+        sb = self.log.verticalScrollBar(); sb.setValue(sb.maximum())
+
+    def set_preview(self, qimg: QImage):
+        if qimg.isNull():
+            return
+        pix = QPixmap.fromImage(qimg).scaled(
+            self.preview.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.preview.setPixmap(pix)
+
+
+# ===================== 分頁 1：提取 + 去重 =====================
+class TabExtractDedup(QWidget):
+    def __init__(self, mainwin):
+        super().__init__()
+        self.mainwin = mainwin
         self.worker = None
-        self._build_ui()
+        self._build()
 
-    def _build_ui(self):
-        root = QWidget()
-        root.setObjectName("root")
-        self.setCentralWidget(root)
-        outer = QVBoxLayout(root)
-        outer.setContentsMargins(24, 20, 24, 20)
-        outer.setSpacing(16)
+    def _build(self):
+        v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 14); v.setSpacing(12)
 
-        header = QHBoxLayout()
-        header.setSpacing(12)
-        title_box = QVBoxLayout()
-        title_box.setSpacing(2)
-        title = QLabel("FrameExtractor")
-        title.setObjectName("title")
-        subtitle = QLabel("影片逐幀提取 · JPG 100% · pHash 智慧去重 · 資料整理")
-        subtitle.setObjectName("subtitle")
-        title_box.addWidget(title)
-        title_box.addWidget(subtitle)
-        header.addLayout(title_box)
-        header.addStretch(1)
-        self.status_badge = QLabel("● 待命")
-        self.status_badge.setStyleSheet(
-            "background:#21262d;color:#8b949e;border-radius:10px;"
-            "padding:6px 12px;font-weight:600;"
-        )
-        header.addWidget(self.status_badge)
-        outer.addLayout(header)
+        # 檔案
+        fc, fl = make_card()
+        fl.addWidget(section_label("檔案設定"))
+        fl.addWidget(field_label("影片檔案"))
+        r1 = QHBoxLayout()
+        self.video_edit = QLineEdit(); self.video_edit.setPlaceholderText("選擇影片…")
+        r1.addWidget(self.video_edit, 1)
+        b = QPushButton("瀏覽"); b.clicked.connect(self.choose_video); r1.addWidget(b)
+        fl.addLayout(r1)
+        fl.addWidget(field_label("輸出資料夾（留空自動建立）"))
+        r2 = QHBoxLayout()
+        self.out_edit = QLineEdit(); self.out_edit.setPlaceholderText("影片名稱_frames")
+        r2.addWidget(self.out_edit, 1)
+        b2 = QPushButton("瀏覽"); b2.clicked.connect(self.choose_out); r2.addWidget(b2)
+        fl.addLayout(r2)
+        v.addWidget(fc)
 
-        file_card, fcl = make_card()
-        fcl.addWidget(self._section_label("檔案設定"))
+        # 演算法
+        self.algo = AlgoPanel("去重演算法")
+        v.addWidget(self.algo)
 
-        v_row = QVBoxLayout(); v_row.setSpacing(4)
-        v_row.addWidget(self._field_label("影片檔案"))
-        v_inner = QHBoxLayout()
-        self.video_edit = QLineEdit()
-        self.video_edit.setPlaceholderText("選擇 mp4 / mov / avi / mkv …")
-        v_inner.addWidget(self.video_edit, 1)
-        btn_v = QPushButton("瀏覽"); btn_v.clicked.connect(self.choose_video)
-        v_inner.addWidget(btn_v)
-        v_row.addLayout(v_inner)
-        fcl.addLayout(v_row)
+        # 其他參數
+        pc, pl = make_card()
+        pl.addWidget(section_label("輸出參數"))
+        prow = QHBoxLayout()
+        prow.addWidget(field_label("JPG 品質"))
+        self.quality = QSpinBox(); self.quality.setRange(1, 100); self.quality.setValue(100)
+        self.quality.setSuffix(" %")
+        prow.addWidget(self.quality); prow.addStretch(1)
+        pl.addLayout(prow)
+        v.addWidget(pc)
 
-        o_row = QVBoxLayout(); o_row.setSpacing(4)
-        o_row.addWidget(self._field_label("輸出資料夾（留空自動建立）"))
-        o_inner = QHBoxLayout()
-        self.out_edit = QLineEdit()
-        self.out_edit.setPlaceholderText("預設：影片名稱_frames")
-        o_inner.addWidget(self.out_edit, 1)
-        btn_o = QPushButton("瀏覽"); btn_o.clicked.connect(self.choose_output)
-        o_inner.addWidget(btn_o)
-        o_row.addLayout(o_inner)
-        fcl.addLayout(o_row)
-        outer.addWidget(file_card)
+        # 操作列
+        ar = QHBoxLayout()
+        self.start_btn = QPushButton("▶  開始處理"); self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumHeight(36); self.start_btn.clicked.connect(self.start)
+        self.stop_btn = QPushButton("■  中止"); self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(36); self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop)
+        self.open_btn = QPushButton("📂  打開輸出資料夾"); self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self.open_out)
+        ar.addWidget(self.start_btn); ar.addWidget(self.stop_btn); ar.addWidget(self.open_btn)
+        ar.addStretch(1)
+        v.addLayout(ar)
 
-        param_card, pcl = make_card()
-        pcl.addWidget(self._section_label("處理參數"))
-        params_grid = QGridLayout()
-        params_grid.setHorizontalSpacing(20)
-        params_grid.setVerticalSpacing(6)
+        self.progress = QProgressBar(); self.progress.setFormat("%v / %m 幀  ·  %p%")
+        v.addWidget(self.progress)
 
-        params_grid.addWidget(self._field_label("pHash 閾值 (0=嚴格)"), 0, 0)
-        self.threshold_spin = QSpinBox()
-        self.threshold_spin.setRange(0, 64); self.threshold_spin.setValue(5)
-        self.threshold_spin.setToolTip("漢明距離 ≤ 此值視為重複\n0 = 完全相同 / 越大越寬鬆")
-        params_grid.addWidget(self.threshold_spin, 1, 0)
-
-        params_grid.addWidget(self._field_label("Hash 大小"), 0, 1)
-        self.hashsize_spin = QSpinBox()
-        self.hashsize_spin.setRange(4, 32); self.hashsize_spin.setValue(8)
-        params_grid.addWidget(self.hashsize_spin, 1, 1)
-
-        params_grid.addWidget(self._field_label("JPG 品質"), 0, 2)
-        self.quality_spin = QSpinBox()
-        self.quality_spin.setRange(1, 100); self.quality_spin.setValue(100)
-        self.quality_spin.setSuffix(" %")
-        params_grid.addWidget(self.quality_spin, 1, 2)
-
-        self.preview_check = QCheckBox("即時預覽")
-        self.preview_check.setChecked(True)
-        params_grid.addWidget(self.preview_check, 1, 3, Qt.AlignmentFlag.AlignVCenter)
-
-        params_grid.setColumnStretch(4, 1)
-        pcl.addLayout(params_grid)
-        outer.addWidget(param_card)
-
-        action_row = QHBoxLayout(); action_row.setSpacing(10)
-        self.start_btn = QPushButton("▶  開始處理")
-        self.start_btn.setObjectName("primary")
-        self.start_btn.setMinimumHeight(38)
-        self.start_btn.clicked.connect(self.start_extract)
-
-        self.stop_btn = QPushButton("■  中止")
-        self.stop_btn.setObjectName("danger")
-        self.stop_btn.setMinimumHeight(38)
-        self.stop_btn.setEnabled(False)
-        self.stop_btn.clicked.connect(self.stop_extract)
-
-        self.open_btn = QPushButton("📂  打開輸出資料夾")
-        self.open_btn.setMinimumHeight(38)
-        self.open_btn.setEnabled(False)
-        self.open_btn.clicked.connect(self.open_output_folder)
-
-        action_row.addWidget(self.start_btn)
-        action_row.addWidget(self.stop_btn)
-        action_row.addWidget(self.open_btn)
-        action_row.addStretch(1)
-        outer.addLayout(action_row)
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setFormat("%v / %m 幀  ·  %p%")
-        self.progress_bar.setValue(0)
-        outer.addWidget(self.progress_bar)
-
-        kpi_row = QHBoxLayout(); kpi_row.setSpacing(12)
-        self.kpi_total = KpiCard("總幀數", "—", "kpiValue")
-        self.kpi_saved = KpiCard("保留", "—", "kpiValueGood")
-        self.kpi_dup   = KpiCard("重複", "—", "kpiValueWarn")
-        self.kpi_rate  = KpiCard("去重率", "—", "kpiValueAccent")
-        for c in (self.kpi_total, self.kpi_saved, self.kpi_dup, self.kpi_rate):
-            kpi_row.addWidget(c, 1)
-        outer.addLayout(kpi_row)
-
-        bottom = QHBoxLayout(); bottom.setSpacing(12)
-        preview_card, pvl = make_card(margin=12, spacing=8)
-        pvl.addWidget(self._section_label("即時預覽"))
-        self.preview_label = QLabel("尚未開始")
-        self.preview_label.setObjectName("previewFrame")
-        self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumHeight(260)
-        self.preview_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
-        )
-        self.preview_label.setStyleSheet(
-            "background:#0d1117;color:#6e7681;border:1px solid #30363d;"
-            "border-radius:10px;font-size:13px;"
-        )
-        pvl.addWidget(self.preview_label, 1)
-        bottom.addWidget(preview_card, 1)
-
-        log_card, lcl = make_card(margin=12, spacing=8)
-        lcl.addWidget(self._section_label("處理日誌"))
-        self.log_edit = QTextEdit()
-        self.log_edit.setReadOnly(True)
-        self.log_edit.setPlaceholderText("等待開始…")
-        lcl.addWidget(self.log_edit, 1)
-        bottom.addWidget(log_card, 1)
-
-        outer.addLayout(bottom, 1)
-
-    def _section_label(self, text):
-        lbl = QLabel(text); lbl.setObjectName("sectionTitle"); return lbl
-
-    def _field_label(self, text):
-        lbl = QLabel(text); lbl.setObjectName("fieldLabel"); return lbl
-
-    def _set_status(self, text: str, color: str):
-        self.status_badge.setText(f"● {text}")
-        self.status_badge.setStyleSheet(
-            f"background:#21262d;color:{color};border-radius:10px;"
-            f"padding:6px 12px;font-weight:600;"
-        )
+        self.sp = StatsAndPreview()
+        v.addWidget(self.sp, 1)
 
     def choose_video(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "選擇影片",
-            filter="影片檔 (*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v *.webm);;所有檔案 (*.*)"
-        )
+            filter="影片 (*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v *.webm);;所有 (*.*)")
         if path:
             self.video_edit.setText(path)
             if not self.out_edit.text().strip():
                 p = Path(path)
                 self.out_edit.setText(str(p.parent / f"{p.stem}_frames"))
 
-    def choose_output(self):
-        path = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾")
-        if path:
-            self.out_edit.setText(path)
+    def choose_out(self):
+        p = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾")
+        if p: self.out_edit.setText(p)
 
-    def start_extract(self):
-        video = self.video_edit.text().strip()
+    def start(self):
+        v = self.video_edit.text().strip()
+        if not v or not Path(v).exists():
+            QMessageBox.warning(self, "錯誤", "請選擇有效的影片"); return
         out = self.out_edit.text().strip()
-        if not video or not Path(video).exists():
-            QMessageBox.warning(self, "請選擇影片", "請選擇有效的影片檔案")
-            return
         if not out:
-            p = Path(video)
-            out = str(p.parent / f"{p.stem}_frames")
+            p = Path(v); out = str(p.parent / f"{p.stem}_frames")
             self.out_edit.setText(out)
 
-        self.log_edit.clear()
-        self.progress_bar.setMaximum(100)
-        self.progress_bar.setValue(0)
-        for kpi, v in ((self.kpi_total, "0"), (self.kpi_saved, "0"),
-                       (self.kpi_dup, "0"), (self.kpi_rate, "0%")):
-            kpi.set_value(v)
-        self.start_btn.setEnabled(False)
-        self.stop_btn.setEnabled(True)
+        self.sp.reset(); self.progress.setValue(0)
+        self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
         self.open_btn.setEnabled(False)
-        self._set_status("處理中", "#58a6ff")
+        self.mainwin.set_status("處理中…", "#58a6ff")
 
-        self.worker = ExtractWorker(
-            video_path=video,
-            output_dir=out,
-            threshold=self.threshold_spin.value(),
-            hash_size=self.hashsize_spin.value(),
-            jpg_quality=self.quality_spin.value(),
-        )
-        self.worker.progress.connect(self.on_progress)
-        self.worker.log.connect(self.append_log)
-        self.worker.preview.connect(self.on_preview)
-        self.worker.stats_update.connect(self.on_stats)
-        self.worker.finished_ok.connect(self.on_done)
-        self.worker.error.connect(self.on_error)
+        cfg = self.algo.get_config()
+        self.worker = ExtractDedupWorker(v, out, cfg, jpg_quality=self.quality.value())
+        self.worker.progress.connect(lambda c, t: (self.progress.setMaximum(t), self.progress.setValue(c)))
+        self.worker.log.connect(self.sp.append_log)
+        self.worker.preview.connect(lambda img, i: self.sp.set_preview(img))
+        self.worker.stats_update.connect(self._on_stats)
+        self.worker.finished_ok.connect(self._on_done)
+        self.worker.error.connect(self._on_err)
         self.worker.start()
 
-    def stop_extract(self):
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.append_log("⏹ 使用者要求中止…")
-            self._set_status("中止中", "#f0883e")
+    def _on_stats(self, saved, dup, total):
+        self.sp.set_kpi(0, f"{total:,}")
+        self.sp.set_kpi(1, f"{saved:,}")
+        self.sp.set_kpi(2, f"{dup:,}")
+        self.sp.set_kpi(3, f"{(dup/total*100 if total else 0):.1f}%")
 
-    def on_progress(self, cur, total):
-        self.progress_bar.setMaximum(total)
-        self.progress_bar.setValue(cur)
-
-    def on_stats(self, saved, dup, total):
-        self.kpi_total.set_value(f"{total:,}")
-        self.kpi_saved.set_value(f"{saved:,}")
-        self.kpi_dup.set_value(f"{dup:,}")
-        rate = (dup / total * 100) if total else 0
-        self.kpi_rate.set_value(f"{rate:.1f}%")
-
-    def append_log(self, text):
-        self.log_edit.append(text)
-        sb = self.log_edit.verticalScrollBar()
-        sb.setValue(sb.maximum())
-
-    def on_preview(self, qimg, frame_index):
-        if not self.preview_check.isChecked():
-            return
-        pix = QPixmap.fromImage(qimg).scaled(
-            self.preview_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self.preview_label.setPixmap(pix)
-        self.preview_label.setToolTip(f"frame #{frame_index}")
-
-    def on_done(self, stats):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
+    def _on_done(self, s):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
         self.open_btn.setEnabled(True)
-        self._set_status("已完成", "#3fb950")
-        fail_line = ""
-        if stats.get("write_failed", 0) > 0:
-            fail_line = f"\n⚠ 寫入失敗：{stats['write_failed']} 張"
-        QMessageBox.information(
-            self, "處理完成",
-            f"✔ 完成！\n\n"
-            f"總幀數：{stats['total']:,}\n"
-            f"保留：{stats['saved']:,}\n"
-            f"重複：{stats['duplicates']:,}\n"
-            f"去重率：{stats['dedup_rate']:.2f}%{fail_line}\n\n"
-            f"輸出：{stats['output_dir']}"
-        )
+        self.mainwin.set_status("已完成", "#3fb950")
+        QMessageBox.information(self, "完成",
+            f"✔ 完成\n\n總幀數：{s['total']:,}\n保留：{s['saved']:,}\n"
+            f"重複：{s['duplicates']:,}\n去重率：{s['dedup_rate']:.2f}%\n\n"
+            f"輸出：{s['output_dir']}")
 
-    def on_error(self, msg):
-        self.start_btn.setEnabled(True)
-        self.stop_btn.setEnabled(False)
-        self._set_status("錯誤", "#f85149")
+    def _on_err(self, msg):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.mainwin.set_status("錯誤", "#f85149")
         QMessageBox.critical(self, "錯誤", msg)
-        self.append_log(f"✖ [錯誤] {msg}")
+        self.sp.append_log(f"✖ [錯誤] {msg}")
 
-    def open_output_folder(self):
-        out = self.out_edit.text().strip()
-        if not out or not Path(out).exists():
-            return
-        if sys.platform.startswith("win"):
-            os.startfile(out)
-        elif sys.platform == "darwin":
-            subprocess.Popen(["open", out])
-        else:
-            subprocess.Popen(["xdg-open", out])
-
-    def closeEvent(self, event):
+    def stop(self):
         if self.worker and self.worker.isRunning():
             self.worker.stop()
-            self.worker.wait(2000)
-        event.accept()
+            self.sp.append_log("⏹ 中止中…")
+            self.mainwin.set_status("中止中", "#f0883e")
+
+    def open_out(self):
+        out = self.out_edit.text().strip()
+        if out and Path(out).exists():
+            open_folder(out)
 
 
-def apply_dark_palette(app: QApplication):
+# ===================== 分頁 2：只提取 =====================
+class TabExtractOnly(QWidget):
+    def __init__(self, mainwin):
+        super().__init__()
+        self.mainwin = mainwin; self.worker = None
+        self._build()
+
+    def _build(self):
+        v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 14); v.setSpacing(12)
+
+        fc, fl = make_card()
+        fl.addWidget(section_label("檔案設定"))
+        fl.addWidget(field_label("影片檔案"))
+        r1 = QHBoxLayout()
+        self.video_edit = QLineEdit()
+        r1.addWidget(self.video_edit, 1)
+        b = QPushButton("瀏覽"); b.clicked.connect(self.choose_video); r1.addWidget(b)
+        fl.addLayout(r1)
+        fl.addWidget(field_label("輸出資料夾"))
+        r2 = QHBoxLayout()
+        self.out_edit = QLineEdit()
+        r2.addWidget(self.out_edit, 1)
+        b2 = QPushButton("瀏覽"); b2.clicked.connect(self.choose_out); r2.addWidget(b2)
+        fl.addLayout(r2)
+        v.addWidget(fc)
+
+        pc, pl = make_card()
+        pl.addWidget(section_label("提取參數"))
+        g = QGridLayout()
+        g.addWidget(field_label("抽幀間隔（每 N 幀取 1）"), 0, 0)
+        self.step = QSpinBox(); self.step.setRange(1, 9999); self.step.setValue(1)
+        self.step.setToolTip("1 = 每一幀都取，30 = 每 30 幀取一張")
+        g.addWidget(self.step, 0, 1)
+        g.addWidget(field_label("JPG 品質"), 0, 2)
+        self.quality = QSpinBox(); self.quality.setRange(1, 100); self.quality.setValue(100)
+        self.quality.setSuffix(" %")
+        g.addWidget(self.quality, 0, 3)
+        g.setColumnStretch(4, 1)
+        pl.addLayout(g)
+        v.addWidget(pc)
+
+        ar = QHBoxLayout()
+        self.start_btn = QPushButton("▶  開始提取"); self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumHeight(36); self.start_btn.clicked.connect(self.start)
+        self.stop_btn = QPushButton("■  中止"); self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(36); self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop)
+        self.open_btn = QPushButton("📂  打開輸出資料夾"); self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self.open_out)
+        ar.addWidget(self.start_btn); ar.addWidget(self.stop_btn); ar.addWidget(self.open_btn)
+        ar.addStretch(1); v.addLayout(ar)
+
+        self.progress = QProgressBar(); self.progress.setFormat("%v / %m 幀  ·  %p%")
+        v.addWidget(self.progress)
+        self.sp = StatsAndPreview(("總幀數", "已輸出", "—", "—"))
+        v.addWidget(self.sp, 1)
+
+    def choose_video(self):
+        path, _ = QFileDialog.getOpenFileName(self, "選擇影片",
+            filter="影片 (*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v *.webm)")
+        if path:
+            self.video_edit.setText(path)
+            if not self.out_edit.text().strip():
+                p = Path(path)
+                self.out_edit.setText(str(p.parent / f"{p.stem}_frames"))
+
+    def choose_out(self):
+        p = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾")
+        if p: self.out_edit.setText(p)
+
+    def start(self):
+        v = self.video_edit.text().strip()
+        if not v or not Path(v).exists():
+            QMessageBox.warning(self, "錯誤", "請選擇有效的影片"); return
+        out = self.out_edit.text().strip()
+        if not out:
+            p = Path(v); out = str(p.parent / f"{p.stem}_frames")
+            self.out_edit.setText(out)
+        self.sp.reset(); self.progress.setValue(0)
+        self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
+        self.open_btn.setEnabled(False)
+        self.mainwin.set_status("提取中…", "#58a6ff")
+
+        self.worker = ExtractOnlyWorker(v, out, jpg_quality=self.quality.value(),
+                                        frame_step=self.step.value())
+        self.worker.progress.connect(lambda c, t: (self.progress.setMaximum(t), self.progress.setValue(c)))
+        self.worker.log.connect(self.sp.append_log)
+        self.worker.preview.connect(lambda img, i: self.sp.set_preview(img))
+        self.worker.stats_update.connect(lambda saved, total: (
+            self.sp.set_kpi(0, f"{total:,}"), self.sp.set_kpi(1, f"{saved:,}")))
+        self.worker.finished_ok.connect(self._done)
+        self.worker.error.connect(self._err)
+        self.worker.start()
+
+    def _done(self, s):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.open_btn.setEnabled(True)
+        self.mainwin.set_status("已完成", "#3fb950")
+        QMessageBox.information(self, "完成",
+            f"✔ 完成\n\n總幀數：{s['total']:,}\n已輸出：{s['saved']:,}\n\n"
+            f"輸出：{s['output_dir']}")
+
+    def _err(self, msg):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.mainwin.set_status("錯誤", "#f85149")
+        QMessageBox.critical(self, "錯誤", msg)
+
+    def stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+
+    def open_out(self):
+        out = self.out_edit.text().strip()
+        if out and Path(out).exists():
+            open_folder(out)
+
+
+# ===================== 分頁 3：僅去重資料夾 =====================
+class TabFolderDedup(QWidget):
+    def __init__(self, mainwin):
+        super().__init__()
+        self.mainwin = mainwin; self.worker = None
+        self._build()
+
+    def _build(self):
+        v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 14); v.setSpacing(12)
+
+        fc, fl = make_card()
+        fl.addWidget(section_label("資料夾設定"))
+        fl.addWidget(field_label("圖片來源資料夾"))
+        r1 = QHBoxLayout()
+        self.in_edit = QLineEdit()
+        self.in_edit.setPlaceholderText("選擇含 jpg/png 的資料夾…")
+        r1.addWidget(self.in_edit, 1)
+        b = QPushButton("瀏覽"); b.clicked.connect(self.choose_in); r1.addWidget(b)
+        fl.addLayout(r1)
+
+        actrow = QHBoxLayout()
+        actrow.addWidget(field_label("重複圖片處理方式"))
+        self.action = QComboBox()
+        self.action.addItems([
+            "移動到 _duplicates 子資料夾（建議）",
+            "直接刪除（危險！）",
+            "僅產生報表，不動原檔",
+        ])
+        actrow.addWidget(self.action, 1)
+        fl.addLayout(actrow)
+        v.addWidget(fc)
+
+        self.algo = AlgoPanel("去重演算法")
+        v.addWidget(self.algo)
+
+        ar = QHBoxLayout()
+        self.start_btn = QPushButton("▶  開始去重"); self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumHeight(36); self.start_btn.clicked.connect(self.start)
+        self.stop_btn = QPushButton("■  中止"); self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(36); self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop)
+        self.open_btn = QPushButton("📂  打開資料夾"); self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self.open_in)
+        ar.addWidget(self.start_btn); ar.addWidget(self.stop_btn); ar.addWidget(self.open_btn)
+        ar.addStretch(1); v.addLayout(ar)
+
+        self.progress = QProgressBar(); self.progress.setFormat("%v / %m 張  ·  %p%")
+        v.addWidget(self.progress)
+        self.sp = StatsAndPreview(("圖片總數", "保留", "重複", "去重率"))
+        v.addWidget(self.sp, 1)
+
+    def choose_in(self):
+        p = QFileDialog.getExistingDirectory(self, "選擇圖片資料夾")
+        if p: self.in_edit.setText(p)
+
+    def start(self):
+        d = self.in_edit.text().strip()
+        if not d or not Path(d).exists():
+            QMessageBox.warning(self, "錯誤", "請選擇有效的資料夾"); return
+
+        act_idx = self.action.currentIndex()
+        act_name = ["move", "delete", "report"][act_idx]
+        if act_name == "delete":
+            ret = QMessageBox.question(
+                self, "確認刪除",
+                "你選擇了「直接刪除」重複圖片，這個動作無法復原！\n\n確定要繼續嗎？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No)
+            if ret != QMessageBox.StandardButton.Yes:
+                return
+
+        self.sp.reset(); self.progress.setValue(0)
+        self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
+        self.open_btn.setEnabled(False)
+        self.mainwin.set_status("去重中…", "#58a6ff")
+
+        cfg = self.algo.get_config()
+        self.worker = FolderDedupWorker(d, cfg, action=act_name)
+        self.worker.progress.connect(lambda c, t: (self.progress.setMaximum(t), self.progress.setValue(c)))
+        self.worker.log.connect(self.sp.append_log)
+        self.worker.preview.connect(lambda img, i: self.sp.set_preview(img))
+        self.worker.stats_update.connect(lambda k, du, total: (
+            self.sp.set_kpi(0, f"{total:,}"), self.sp.set_kpi(1, f"{k:,}"),
+            self.sp.set_kpi(2, f"{du:,}"),
+            self.sp.set_kpi(3, f"{(du/total*100 if total else 0):.1f}%")))
+        self.worker.finished_ok.connect(self._done)
+        self.worker.error.connect(self._err)
+        self.worker.start()
+
+    def _done(self, s):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.open_btn.setEnabled(True)
+        self.mainwin.set_status("已完成", "#3fb950")
+        QMessageBox.information(self, "完成",
+            f"✔ 完成\n\n總圖片：{s['total']:,}\n保留：{s['saved']:,}\n"
+            f"重複：{s['duplicates']:,}\n去重率：{s['dedup_rate']:.2f}%")
+
+    def _err(self, msg):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.mainwin.set_status("錯誤", "#f85149")
+        QMessageBox.critical(self, "錯誤", msg)
+
+    def stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+
+    def open_in(self):
+        p = self.in_edit.text().strip()
+        if p and Path(p).exists(): open_folder(p)
+
+
+# ===================== 分頁 4：批次處理 =====================
+class TabBatch(QWidget):
+    def __init__(self, mainwin):
+        super().__init__()
+        self.mainwin = mainwin; self.worker = None
+        self._build()
+
+    def _build(self):
+        v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 14); v.setSpacing(12)
+
+        fc, fl = make_card()
+        fl.addWidget(section_label("影片清單"))
+        self.list_w = QListWidget()
+        self.list_w.setMinimumHeight(120)
+        fl.addWidget(self.list_w, 1)
+        brow = QHBoxLayout()
+        b_add = QPushButton("+ 加入影片"); b_add.clicked.connect(self.add_videos)
+        b_adddir = QPushButton("+ 加入資料夾"); b_adddir.clicked.connect(self.add_dir)
+        b_rm = QPushButton("− 移除選取"); b_rm.clicked.connect(self.remove_sel)
+        b_clr = QPushButton("清空"); b_clr.clicked.connect(self.list_w.clear)
+        brow.addWidget(b_add); brow.addWidget(b_adddir)
+        brow.addWidget(b_rm); brow.addWidget(b_clr); brow.addStretch(1)
+        fl.addLayout(brow)
+        fl.addWidget(field_label("輸出根目錄（每個影片建立子資料夾）"))
+        r2 = QHBoxLayout()
+        self.out_edit = QLineEdit()
+        r2.addWidget(self.out_edit, 1)
+        b2 = QPushButton("瀏覽"); b2.clicked.connect(self.choose_out); r2.addWidget(b2)
+        fl.addLayout(r2)
+        v.addWidget(fc)
+
+        mc, ml = make_card()
+        ml.addWidget(section_label("處理模式"))
+        mrow = QHBoxLayout()
+        self.mode = QComboBox()
+        self.mode.addItems(["提取 + 去重", "只提取不去重"])
+        mrow.addWidget(field_label("模式"))
+        mrow.addWidget(self.mode, 1)
+        mrow.addWidget(field_label("JPG 品質"))
+        self.quality = QSpinBox(); self.quality.setRange(1, 100); self.quality.setValue(100)
+        self.quality.setSuffix(" %")
+        mrow.addWidget(self.quality)
+        ml.addLayout(mrow)
+        v.addWidget(mc)
+
+        self.algo = AlgoPanel("去重演算法（僅在「提取+去重」模式生效）")
+        v.addWidget(self.algo)
+
+        ar = QHBoxLayout()
+        self.start_btn = QPushButton("▶  開始批次"); self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumHeight(36); self.start_btn.clicked.connect(self.start)
+        self.stop_btn = QPushButton("■  中止"); self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(36); self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop)
+        ar.addWidget(self.start_btn); ar.addWidget(self.stop_btn); ar.addStretch(1)
+        v.addLayout(ar)
+
+        self.progress = QProgressBar(); self.progress.setFormat("整體 %v / %m 影片  ·  %p%")
+        v.addWidget(self.progress)
+        self.sub_progress = QProgressBar(); self.sub_progress.setFormat("子任務 %v / %m  ·  %p%")
+        v.addWidget(self.sub_progress)
+
+        self.sp = StatsAndPreview(("已處理影片", "保留總計", "重複總計", "—"))
+        v.addWidget(self.sp, 1)
+
+    def add_videos(self):
+        paths, _ = QFileDialog.getOpenFileNames(self, "選擇多個影片",
+            filter="影片 (*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v *.webm)")
+        for p in paths:
+            self.list_w.addItem(QListWidgetItem(p))
+
+    def add_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "選擇影片資料夾")
+        if not d: return
+        exts = {".mp4", ".mov", ".avi", ".mkv", ".flv", ".wmv", ".m4v", ".webm"}
+        for p in sorted(Path(d).iterdir()):
+            if p.is_file() and p.suffix.lower() in exts:
+                self.list_w.addItem(QListWidgetItem(str(p)))
+
+    def remove_sel(self):
+        for it in self.list_w.selectedItems():
+            self.list_w.takeItem(self.list_w.row(it))
+
+    def choose_out(self):
+        d = QFileDialog.getExistingDirectory(self, "選擇輸出根目錄")
+        if d: self.out_edit.setText(d)
+
+    def start(self):
+        n = self.list_w.count()
+        if n == 0:
+            QMessageBox.warning(self, "錯誤", "請先加入影片"); return
+        out = self.out_edit.text().strip()
+        if not out:
+            QMessageBox.warning(self, "錯誤", "請選擇輸出根目錄"); return
+        paths = [self.list_w.item(i).text() for i in range(n)]
+
+        self.sp.reset(); self.progress.setValue(0); self.sub_progress.setValue(0)
+        self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
+        self.mainwin.set_status("批次處理中…", "#58a6ff")
+
+        mode = "dedup" if self.mode.currentIndex() == 0 else "extract"
+        cfg = self.algo.get_config()
+        self.worker = BatchWorker(paths, out, cfg,
+                                  jpg_quality=self.quality.value(), mode=mode)
+        self.worker.progress.connect(lambda c, t: (self.progress.setMaximum(t), self.progress.setValue(c)))
+        self.worker.sub_progress.connect(lambda c, t: (self.sub_progress.setMaximum(t), self.sub_progress.setValue(c)))
+        self.worker.log.connect(self.sp.append_log)
+        self.worker.preview.connect(lambda img, i: self.sp.set_preview(img))
+        self.worker.finished_ok.connect(self._done)
+        self.worker.error.connect(self._err)
+        self.worker.start()
+
+    def _done(self, agg):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.mainwin.set_status("批次完成", "#3fb950")
+        self.sp.set_kpi(0, f"{agg['videos']:,}")
+        self.sp.set_kpi(1, f"{agg['saved_total']:,}")
+        self.sp.set_kpi(2, f"{agg['dup_total']:,}")
+        QMessageBox.information(self, "完成",
+            f"✔ 批次完成\n\n處理影片：{agg['videos']}\n"
+            f"保留總計：{agg['saved_total']:,}\n重複總計：{agg['dup_total']:,}")
+
+    def _err(self, msg):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        QMessageBox.critical(self, "錯誤", msg)
+        self.mainwin.set_status("錯誤", "#f85149")
+
+    def stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+
+
+# ===================== 工具 =====================
+def open_folder(path):
+    if sys.platform.startswith("win"):
+        os.startfile(path)
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", path])
+    else:
+        subprocess.Popen(["xdg-open", path])
+
+
+PREF_FILE = Path.home() / ".frameextractor_prefs.json"
+
+
+# ===================== 主視窗 =====================
+class MainWindow(QMainWindow):
+    APP_NAME = "FrameExtractor"
+    APP_VERSION = "2.0"
+
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(f"{self.APP_NAME} · 影片提取與智慧去重工具")
+        self.resize(1180, 820)
+        self.setMinimumSize(QSize(1000, 720))
+        self.dark_mode = True
+        self._build_ui()
+        self._build_menubar()
+        self._build_statusbar()
+        self._load_prefs()
+
+    def _build_ui(self):
+        root = QWidget(); root.setObjectName("root")
+        self.setCentralWidget(root)
+        v = QVBoxLayout(root)
+        v.setContentsMargins(16, 12, 16, 8); v.setSpacing(10)
+
+        h = QHBoxLayout()
+        tbox = QVBoxLayout(); tbox.setSpacing(2)
+        title = QLabel(self.APP_NAME); title.setObjectName("title")
+        sub = QLabel(f"v{self.APP_VERSION} · 影片提取 · 智慧去重 · 批次處理")
+        sub.setObjectName("subtitle")
+        tbox.addWidget(title); tbox.addWidget(sub)
+        h.addLayout(tbox); h.addStretch(1)
+        self.status_badge = QLabel("● 待命")
+        self.status_badge.setStyleSheet(
+            "background:#21262d;color:#8b949e;border-radius:10px;padding:6px 12px;font-weight:600;")
+        h.addWidget(self.status_badge)
+        v.addLayout(h)
+
+        self.tabs = QTabWidget()
+        self.tab_extract_dedup = TabExtractDedup(self)
+        self.tab_extract_only  = TabExtractOnly(self)
+        self.tab_folder_dedup  = TabFolderDedup(self)
+        self.tab_batch         = TabBatch(self)
+        self.tabs.addTab(self.tab_extract_dedup, "🎬  提取 + 去重")
+        self.tabs.addTab(self.tab_extract_only,  "📸  只提取")
+        self.tabs.addTab(self.tab_folder_dedup,  "🗂  僅去重資料夾")
+        self.tabs.addTab(self.tab_batch,         "📚  批次處理")
+        v.addWidget(self.tabs, 1)
+
+    def _build_menubar(self):
+        mb: QMenuBar = self.menuBar()
+
+        m_file = mb.addMenu("檔案(&F)")
+        act_open = QAction("開啟影片…", self)
+        act_open.setShortcut(QKeySequence("Ctrl+O"))
+        act_open.triggered.connect(self._menu_open_video)
+        m_file.addAction(act_open)
+        act_open_dir = QAction("開啟資料夾去重…", self)
+        act_open_dir.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        act_open_dir.triggered.connect(self._menu_open_dir)
+        m_file.addAction(act_open_dir)
+        m_file.addSeparator()
+        act_export = QAction("匯出本次報表…", self)
+        act_export.setShortcut(QKeySequence("Ctrl+E"))
+        act_export.triggered.connect(self._menu_export)
+        m_file.addAction(act_export)
+        m_file.addSeparator()
+        act_quit = QAction("離開", self)
+        act_quit.setShortcut(QKeySequence("Ctrl+Q"))
+        act_quit.triggered.connect(self.close)
+        m_file.addAction(act_quit)
+
+        m_edit = mb.addMenu("編輯(&E)")
+        act_copy = QAction("複製當前輸出路徑", self)
+        act_copy.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        act_copy.triggered.connect(self._menu_copy_path)
+        m_edit.addAction(act_copy)
+        act_clear = QAction("清除日誌", self)
+        act_clear.setShortcut(QKeySequence("Ctrl+L"))
+        act_clear.triggered.connect(self._menu_clear_log)
+        m_edit.addAction(act_clear)
+        m_edit.addSeparator()
+        act_pref = QAction("偏好設定…", self)
+        act_pref.setShortcut(QKeySequence("Ctrl+,"))
+        act_pref.triggered.connect(self._menu_prefs)
+        m_edit.addAction(act_pref)
+
+        m_view = mb.addMenu("檢視(&V)")
+        self.act_theme = QAction("切換明暗主題", self)
+        self.act_theme.setShortcut(QKeySequence("Ctrl+T"))
+        self.act_theme.triggered.connect(self.toggle_theme)
+        m_view.addAction(self.act_theme)
+        self.act_full = QAction("全螢幕", self, checkable=True)
+        self.act_full.setShortcut(QKeySequence("F11"))
+        self.act_full.toggled.connect(self._toggle_fullscreen)
+        m_view.addAction(self.act_full)
+        self.act_statusbar = QAction("顯示狀態列", self, checkable=True)
+        self.act_statusbar.setChecked(True)
+        self.act_statusbar.toggled.connect(lambda on: self.statusBar().setVisible(on))
+        m_view.addAction(self.act_statusbar)
+
+        m_help = mb.addMenu("說明(&H)")
+        act_usage = QAction("使用說明", self)
+        act_usage.setShortcut(QKeySequence("F1"))
+        act_usage.triggered.connect(self._menu_usage)
+        m_help.addAction(act_usage)
+        act_update = QAction("檢查更新", self)
+        act_update.triggered.connect(self._menu_check_update)
+        m_help.addAction(act_update)
+        m_help.addSeparator()
+        act_about = QAction("關於 FrameExtractor", self)
+        act_about.triggered.connect(self._menu_about)
+        m_help.addAction(act_about)
+
+    def _build_statusbar(self):
+        sb: QStatusBar = self.statusBar()
+        self.status_msg = QLabel("就緒")
+        sb.addWidget(self.status_msg)
+        self.status_right = QLabel("v" + self.APP_VERSION)
+        sb.addPermanentWidget(self.status_right)
+
+    def set_status(self, text, color="#8b949e"):
+        self.status_badge.setText(f"● {text}")
+        self.status_badge.setStyleSheet(
+            f"background:#21262d;color:{color};border-radius:10px;padding:6px 12px;font-weight:600;")
+        self.status_msg.setText(text)
+
+    def _current_out_lineedit(self):
+        idx = self.tabs.currentIndex()
+        return [self.tab_extract_dedup.out_edit,
+                self.tab_extract_only.out_edit,
+                self.tab_folder_dedup.in_edit,
+                self.tab_batch.out_edit][idx]
+
+    def _menu_open_video(self):
+        path, _ = QFileDialog.getOpenFileName(self, "開啟影片",
+            filter="影片 (*.mp4 *.mov *.avi *.mkv *.flv *.wmv *.m4v *.webm)")
+        if path:
+            self.tabs.setCurrentIndex(0)
+            self.tab_extract_dedup.video_edit.setText(path)
+            if not self.tab_extract_dedup.out_edit.text().strip():
+                p = Path(path)
+                self.tab_extract_dedup.out_edit.setText(str(p.parent / f"{p.stem}_frames"))
+
+    def _menu_open_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "選擇圖片資料夾")
+        if d:
+            self.tabs.setCurrentIndex(2)
+            self.tab_folder_dedup.in_edit.setText(d)
+
+    def _menu_export(self):
+        out = self._current_out_lineedit().text().strip()
+        if not out or not Path(out).exists():
+            QMessageBox.information(self, "匯出", "尚無輸出資料夾可匯出"); return
+        target, _ = QFileDialog.getSaveFileName(
+            self, "匯出報表為",
+            str(Path(out) / "frames_report_copy.csv"),
+            "CSV 檔 (*.csv)")
+        if not target: return
+        src = Path(out) / "frames_report.csv"
+        if not src.exists():
+            QMessageBox.warning(self, "錯誤", "找不到 frames_report.csv")
+            return
+        import shutil
+        shutil.copy2(src, target)
+        QMessageBox.information(self, "完成", f"已匯出至 {target}")
+
+    def _menu_copy_path(self):
+        le = self._current_out_lineedit()
+        QApplication.clipboard().setText(le.text())
+        self.status_msg.setText(f"已複製：{le.text()}")
+
+    def _menu_clear_log(self):
+        idx = self.tabs.currentIndex()
+        sp = [self.tab_extract_dedup.sp, self.tab_extract_only.sp,
+              self.tab_folder_dedup.sp, self.tab_batch.sp][idx]
+        sp.log.clear()
+
+    def _menu_prefs(self):
+        QMessageBox.information(self, "偏好設定",
+            f"偏好設定儲存於：\n{PREF_FILE}\n\n"
+            "包含：主題、視窗大小\n自動於關閉時儲存。")
+
+    def toggle_theme(self):
+        self.dark_mode = not self.dark_mode
+        QApplication.instance().setStyleSheet(DARK_QSS if self.dark_mode else LIGHT_QSS)
+
+    def _toggle_fullscreen(self, on):
+        if on: self.showFullScreen()
+        else: self.showNormal()
+
+    def _menu_usage(self):
+        msg = (
+            "<b>FrameExtractor 使用說明</b><hr>"
+            "<b>🎬 提取 + 去重</b>：影片逐幀提取 JPG，同步去除相似畫面。<br><br>"
+            "<b>📸 只提取</b>：完整保留所有幀（或指定間隔），不做去重。<br><br>"
+            "<b>🗂 僅去重資料夾</b>：對既有圖片資料夾去重（移動／刪除／僅報表）。<br><br>"
+            "<b>📚 批次處理</b>：一次處理多個影片，自動建立子資料夾。<br><br>"
+            "<b>演算法等級</b>：<br>"
+            "&nbsp;• <b>快速</b>：dHash<br>"
+            "&nbsp;• <b>標準</b>：dHash + pHash（推薦）<br>"
+            "&nbsp;• <b>精準</b>：+ 直方圖 + SSIM<br>"
+            "&nbsp;• <b>最精準</b>：+ CLIP 語意（需 PyTorch）<br>"
+        )
+        box = QMessageBox(self)
+        box.setWindowTitle("使用說明")
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(msg)
+        box.exec()
+
+    def _menu_check_update(self):
+        QMessageBox.information(self, "檢查更新",
+            f"目前版本：v{self.APP_VERSION}\n\n本程式為離線工具，無自動更新機制。")
+
+    def _menu_about(self):
+        QMessageBox.about(self, f"關於 {self.APP_NAME}",
+            f"<h3>{self.APP_NAME}</h3>"
+            f"<p>版本：v{self.APP_VERSION}</p>"
+            "<p>影片逐幀提取與智慧去重工具</p>"
+            "<p>核心：OpenCV · imagehash · PyQt6</p>"
+            "<p>多演算法分層比對：dHash / pHash / 直方圖 / SSIM / CLIP</p>")
+
+    def _load_prefs(self):
+        try:
+            if PREF_FILE.exists():
+                p = json.loads(PREF_FILE.read_text(encoding="utf-8"))
+                if "dark_mode" in p:
+                    self.dark_mode = p["dark_mode"]
+                    QApplication.instance().setStyleSheet(DARK_QSS if self.dark_mode else LIGHT_QSS)
+                if "geometry" in p:
+                    w, h = p["geometry"]; self.resize(w, h)
+        except Exception:
+            pass
+
+    def _save_prefs(self):
+        try:
+            PREF_FILE.write_text(json.dumps({
+                "dark_mode": self.dark_mode,
+                "geometry": [self.width(), self.height()],
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def closeEvent(self, e):
+        self._save_prefs()
+        for tab in [self.tab_extract_dedup, self.tab_extract_only,
+                    self.tab_folder_dedup, self.tab_batch]:
+            w = getattr(tab, "worker", None)
+            if w and w.isRunning():
+                w.stop(); w.wait(2000)
+        e.accept()
+
+
+def apply_palette(app):
     pal = QPalette()
     pal.setColor(QPalette.ColorRole.Window, QColor("#0f1419"))
     pal.setColor(QPalette.ColorRole.WindowText, QColor("#e6edf3"))
@@ -692,8 +1161,8 @@ def apply_dark_palette(app: QApplication):
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
-    apply_dark_palette(app)
-    app.setStyleSheet(STYLESHEET)
+    apply_palette(app)
+    app.setStyleSheet(DARK_QSS)
     win = MainWindow()
     win.show()
     sys.exit(app.exec())
