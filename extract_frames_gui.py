@@ -182,6 +182,16 @@ QMainWindow, QWidget#root { background: #f6f8fa; }
 QFrame#card, QGroupBox { background: #ffffff; border: 1px solid #d0d7de; border-radius: 12px; }
 QLabel#title { font-size: 22px; font-weight: 700; color: #1f2328; }
 QLabel#subtitle { font-size: 12px; color: #57606a; }
+QLabel#sectionTitle { font-size: 13px; font-weight: 600; color: #1f2328; padding-bottom: 4px; }
+QLabel#fieldLabel { font-size: 12px; color: #57606a; }
+QLabel#kpiLabel { font-size: 11px; color: #57606a; letter-spacing: 1px; }
+QLabel#kpiValue { font-size: 22px; font-weight: 700; color: #1f2328; }
+QLabel#kpiValueAccent { font-size: 22px; font-weight: 700; color: #0969da; }
+QLabel#kpiValueGood { font-size: 22px; font-weight: 700; color: #1a7f37; }
+QLabel#kpiValueWarn { font-size: 22px; font-weight: 700; color: #bc4c00; }
+QFrame#kpiCard { background: #ffffff; border: 1px solid #d0d7de; border-radius: 10px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; color: #57606a; }
+QGroupBox { margin-top: 14px; padding-top: 12px; font-weight: 600; color: #1f2328; }
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
     background: #ffffff; border: 1px solid #d0d7de; border-radius: 8px; padding: 6px 10px;
 }
@@ -976,6 +986,8 @@ class MainWindow(QMainWindow):
         self.resize(1180, 820)
         self.setMinimumSize(QSize(1000, 720))
         self.dark_mode = True
+        self._status_text = "待命"
+        self._status_color = "#8b949e"
         self._build_ui()
         self._build_menubar()
         self._build_statusbar()
@@ -994,10 +1006,9 @@ class MainWindow(QMainWindow):
         sub.setObjectName("subtitle")
         tbox.addWidget(title); tbox.addWidget(sub)
         h.addLayout(tbox); h.addStretch(1)
-        self.status_badge = QLabel("● 待命")
-        self.status_badge.setStyleSheet(
-            "background:#21262d;color:#8b949e;border-radius:10px;padding:6px 12px;font-weight:600;")
+        self.status_badge = QLabel()
         h.addWidget(self.status_badge)
+        self._refresh_badge()
         v.addLayout(h)
 
         self.tabs = QTabWidget()
@@ -1094,10 +1105,17 @@ class MainWindow(QMainWindow):
         sb.addPermanentWidget(self.status_right)
 
     def set_status(self, text, color="#8b949e"):
-        self.status_badge.setText(f"● {text}")
-        self.status_badge.setStyleSheet(
-            f"background:#21262d;color:{color};border-radius:10px;padding:6px 12px;font-weight:600;")
+        self._status_text = text
+        self._status_color = color
+        self._refresh_badge()
         self.status_msg.setText(text)
+
+    def _refresh_badge(self):
+        bg = "#21262d" if self.dark_mode else "#eaeef2"
+        self.status_badge.setText(f"● {self._status_text}")
+        self.status_badge.setStyleSheet(
+            f"background:{bg};color:{self._status_color};"
+            "border-radius:10px;padding:6px 12px;font-weight:600;")
 
     def _current_out_lineedit(self):
         idx = self.tabs.currentIndex()
@@ -1157,7 +1175,13 @@ class MainWindow(QMainWindow):
 
     def toggle_theme(self):
         self.dark_mode = not self.dark_mode
-        QApplication.instance().setStyleSheet(DARK_QSS if self.dark_mode else LIGHT_QSS)
+        self._apply_theme()
+
+    def _apply_theme(self):
+        app = QApplication.instance()
+        apply_palette(app, self.dark_mode)
+        app.setStyleSheet(DARK_QSS if self.dark_mode else LIGHT_QSS)
+        self._refresh_badge()
 
     def _toggle_fullscreen(self, on):
         if on: self.showFullScreen()
@@ -1187,12 +1211,33 @@ class MainWindow(QMainWindow):
             f"目前版本：v{self.APP_VERSION}\n\n本程式為離線工具，無自動更新機制。")
 
     def _menu_about(self):
-        QMessageBox.about(self, f"關於 {self.APP_NAME}",
-            f"<h3>{self.APP_NAME}</h3>"
-            f"<p>版本：v{self.APP_VERSION}</p>"
-            "<p>影片逐幀提取與智慧去重工具</p>"
-            "<p>核心：OpenCV · imagehash · PyQt6</p>"
-            "<p>多演算法分層比對：dHash / pHash / 直方圖 / SSIM / CLIP</p>")
+        url = "https://github.com/airesearch3412-hub/FrameExtractor"
+        box = QMessageBox(self)
+        box.setWindowTitle(f"關於 {self.APP_NAME}")
+        box.setIconPixmap(QPixmap())
+        box.setTextFormat(Qt.TextFormat.RichText)
+        box.setText(
+            f"<h3 style='margin-bottom:2px'>{self.APP_NAME}</h3>"
+            f"<p style='color:#8b949e; margin-top:0'>版本 v{self.APP_VERSION}</p>"
+            "<p>影片逐幀提取與智慧去重工具<br>"
+            "多演算法分層比對：dHash / pHash / 直方圖 / SSIM / CLIP</p>"
+            "<table style='margin-top:6px'>"
+            "<tr><td style='color:#8b949e; padding:2px 16px 2px 0'>作者</td>"
+            "<td>airesearch3412-hub</td></tr>"
+            "<tr><td style='color:#8b949e; padding:2px 16px 2px 0'>原始碼</td>"
+            f"<td><a href='{url}' style='color:#58a6ff'>{url}</a></td></tr>"
+            "<tr><td style='color:#8b949e; padding:2px 16px 2px 0'>核心套件</td>"
+            "<td>OpenCV · imagehash · PyQt6 · open-clip</td></tr>"
+            "<tr><td style='color:#8b949e; padding:2px 16px 2px 0'>授權</td>"
+            "<td>PolyForm Noncommercial 1.0.0<br>"
+            "<span style='color:#8b949e'>（非商業用途；商業使用須另洽授權）</span></td></tr>"
+            "</table>"
+        )
+        lbl = box.findChild(QLabel, "qt_msgbox_label")
+        if lbl:
+            lbl.setOpenExternalLinks(True)
+            lbl.setStyleSheet("min-width: 460px;")
+        box.exec()
 
     def _load_prefs(self):
         try:
@@ -1200,7 +1245,7 @@ class MainWindow(QMainWindow):
                 p = json.loads(PREF_FILE.read_text(encoding="utf-8"))
                 if "dark_mode" in p:
                     self.dark_mode = p["dark_mode"]
-                    QApplication.instance().setStyleSheet(DARK_QSS if self.dark_mode else LIGHT_QSS)
+                    self._apply_theme()
                 if "geometry" in p:
                     w, h = p["geometry"]; self.resize(w, h)
         except Exception:
@@ -1225,16 +1270,28 @@ class MainWindow(QMainWindow):
         e.accept()
 
 
-def apply_palette(app):
+def apply_palette(app, dark=True):
     pal = QPalette()
-    pal.setColor(QPalette.ColorRole.Window, QColor("#0f1419"))
-    pal.setColor(QPalette.ColorRole.WindowText, QColor("#e6edf3"))
-    pal.setColor(QPalette.ColorRole.Base, QColor("#0d1117"))
-    pal.setColor(QPalette.ColorRole.Text, QColor("#e6edf3"))
-    pal.setColor(QPalette.ColorRole.Button, QColor("#21262d"))
-    pal.setColor(QPalette.ColorRole.ButtonText, QColor("#e6edf3"))
-    pal.setColor(QPalette.ColorRole.Highlight, QColor("#1f6feb"))
-    pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
+    if dark:
+        c = {"window": "#0f1419", "text": "#e6edf3", "base": "#0d1117",
+             "button": "#21262d", "btext": "#e6edf3", "hl": "#1f6feb",
+             "htext": "#ffffff", "tip": "#161b22", "ph": "#6e7681"}
+    else:
+        c = {"window": "#f6f8fa", "text": "#1f2328", "base": "#ffffff",
+             "button": "#f6f8fa", "btext": "#1f2328", "hl": "#0969da",
+             "htext": "#ffffff", "tip": "#ffffff", "ph": "#8b949e"}
+    pal.setColor(QPalette.ColorRole.Window, QColor(c["window"]))
+    pal.setColor(QPalette.ColorRole.WindowText, QColor(c["text"]))
+    pal.setColor(QPalette.ColorRole.Base, QColor(c["base"]))
+    pal.setColor(QPalette.ColorRole.AlternateBase, QColor(c["window"]))
+    pal.setColor(QPalette.ColorRole.Text, QColor(c["text"]))
+    pal.setColor(QPalette.ColorRole.Button, QColor(c["button"]))
+    pal.setColor(QPalette.ColorRole.ButtonText, QColor(c["btext"]))
+    pal.setColor(QPalette.ColorRole.Highlight, QColor(c["hl"]))
+    pal.setColor(QPalette.ColorRole.HighlightedText, QColor(c["htext"]))
+    pal.setColor(QPalette.ColorRole.ToolTipBase, QColor(c["tip"]))
+    pal.setColor(QPalette.ColorRole.ToolTipText, QColor(c["text"]))
+    pal.setColor(QPalette.ColorRole.PlaceholderText, QColor(c["ph"]))
     app.setPalette(pal)
 
 
