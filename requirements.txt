@@ -4,3 +4,8 @@ imagehash>=4.3.1
 PyQt6>=6.6.0
 numpy>=1.24.0
 tqdm>=4.66.0
+
+# CLIP 語意比對（ultra / 最精準等級用）。較大（torch 數百 MB，首次跑會下載權重 ~300MB）。
+# 只用 fast/standard/precise 等級可不裝這兩個。
+torch>=2.0.0
+open-clip-torch>=2.20.0

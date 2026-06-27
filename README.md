@@ -8,8 +8,9 @@
 pip install -r requirements.txt
 ```
 
-依賴：`opencv-python`、`Pillow`、`imagehash`、`PyQt6`、`numpy`、`tqdm`。
-（CLIP 語意比對為選用，需另裝 PyTorch + CLIP，見「已知限制」。）
+核心依賴：`opencv-python`、`Pillow`、`imagehash`、`PyQt6`、`numpy`、`tqdm`。
+CLIP 語意比對（`ultra` 等級）另需 `torch` + `open-clip-torch`，已一併列入 `requirements.txt`；
+若不使用 `ultra` 等級，可不安裝這兩個重依賴。
 
 ## 執行
 
@@ -102,9 +103,18 @@ GUI 中點「▼ 進階設定」可自由勾選與調整每個演算法的閾值
 - **直接刪除**（會跳出確認對話框）
 - **僅產生報表**（不動原檔，只輸出 `_dedup_report.csv`）
 
+## 演算法實作狀態
+
+五種演算法**皆已完整實作**：
+
+- **dHash / pHash** — `imagehash` 感知雜湊，漢明距離比對。
+- **直方圖** — HSV 色彩直方圖（H 50 bins、S 60 bins）相關係數比對。
+- **SSIM** — 純 numpy + OpenCV 高斯窗實作的結構相似度（無額外依賴）。
+- **CLIP** — `open-clip-torch`（ViT-B-32 / openai 權重）影像語意向量 + 餘弦相似度；模型於進程內快取，僅 `ultra` 等級才載入。
+
 ## 已知限制
 
-- CLIP 語意比對（`ultra` 等級）需另外安裝 PyTorch 與 CLIP 模型（首次使用會下載約 300MB）
+- CLIP 語意比對（`ultra` 等級）首次使用會自動下載模型權重（約 300MB）；無 GPU 時以 CPU 推論，速度較慢。
 - 中文路徑已支援（透過 `imencode + numpy.tofile` / `numpy.fromfile + imdecode` bypass OpenCV 的限制）
 
 ## 授權 License

@@ -227,6 +227,53 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
+# ========== CLIP 語意編碼器 ==========
+class ClipModel:
+    """以 open_clip 載入 CLIP 模型，將影像編碼成 L2 normalized 向量。
+    依賴 torch + open_clip，屬選用重依賴，僅在 use_clip 時才載入。"""
+
+    def __init__(self, model_name: str = "ViT-B-32",
+                 pretrained: str = "openai", device: Optional[str] = None):
+        try:
+            import torch
+            import open_clip
+        except ImportError as e:
+            raise ImportError(
+                "CLIP 語意比對需要 torch 與 open_clip：\n"
+                "    pip install torch open-clip-torch\n"
+                f"原始錯誤：{e}"
+            ) from e
+
+        self._torch = torch
+        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.model, _, self.preprocess = open_clip.create_model_and_transforms(
+            model_name, pretrained=pretrained)
+        self.model.eval().to(self.device)
+
+    def encode(self, pil_img: "Image.Image") -> np.ndarray:
+        """回傳單張影像的 L2 normalized 向量（numpy float32, shape=(D,)）。"""
+        torch = self._torch
+        with torch.no_grad():
+            tensor = self.preprocess(pil_img).unsqueeze(0).to(self.device)
+            feat = self.model.encode_image(tensor)
+            feat = feat / feat.norm(dim=-1, keepdim=True)
+        return feat.squeeze(0).cpu().numpy().astype(np.float32)
+
+
+# 模組級快取：同一進程內只載入一次 CLIP 權重
+_CLIP_CACHE: dict = {}
+
+
+def load_clip_model(model_name: str = "ViT-B-32",
+                    pretrained: str = "openai",
+                    device: Optional[str] = None) -> ClipModel:
+    """載入（或回傳已快取的）CLIP 模型。"""
+    key = (model_name, pretrained, device)
+    if key not in _CLIP_CACHE:
+        _CLIP_CACHE[key] = ClipModel(model_name, pretrained, device)
+    return _CLIP_CACHE[key]
+
+
 # ========== 去重器主類 ==========
 class Deduper:
     """維護「已保留」幀的特徵清單，比對是否重複。

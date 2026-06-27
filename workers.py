@@ -20,7 +20,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from PyQt6.QtGui import QImage
 
 from deduper import (
-    DedupConfig, Deduper, compute_features,
+    DedupConfig, Deduper, compute_features, load_clip_model,
     imread_unicode, imwrite_unicode,
 )
 
@@ -125,6 +125,17 @@ class ExtractDedupWorker(QThread):
             dup_w.writerow(["frame_index", "timestamp",
                             "duplicate_of_frame", "duplicate_of_filename", "scores"])
 
+            clip_model = None
+            if self.cfg.use_clip:
+                try:
+                    self.log.emit("▶ 載入 CLIP 模型中…（首次使用會下載權重，約 300MB）")
+                    clip_model = load_clip_model()
+                    self.log.emit(f"  CLIP 就緒（device={clip_model.device}）\n")
+                except Exception as e:
+                    self.error.emit(f"CLIP 載入失敗：{e}")
+                    cap.release(); csv_file.close(); dup_file.close()
+                    return
+
             dedup = Deduper(self.cfg)
             saved = 0; dup = 0; failed = 0; idx = 0
 
@@ -138,7 +149,8 @@ class ExtractDedupWorker(QThread):
                         break
 
                     ts = format_timestamp(cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0)
-                    feat = compute_features(frame, self.cfg, index=idx)
+                    feat = compute_features(frame, self.cfg, index=idx,
+                                            clip_model=clip_model)
 
                     is_dup, prev, scores = dedup.check(feat)
                     if is_dup:
@@ -329,6 +341,17 @@ class FolderDedupWorker(QThread):
             rep_w.writerow(["index", "filename", "status",
                             "duplicate_of", "scores", "action"])
 
+            clip_model = None
+            if self.cfg.use_clip:
+                try:
+                    self.log.emit("▶ 載入 CLIP 模型中…（首次使用會下載權重，約 300MB）")
+                    clip_model = load_clip_model()
+                    self.log.emit(f"  CLIP 就緒（device={clip_model.device}）\n")
+                except Exception as e:
+                    self.error.emit(f"CLIP 載入失敗：{e}")
+                    rep_file.close()
+                    return
+
             dedup = Deduper(self.cfg)
             kept = 0; dup = 0; failed = 0
 
@@ -343,7 +366,8 @@ class FolderDedupWorker(QThread):
                     self.log.emit(f"⚠ 無法讀取：{path.name}")
                     continue
 
-                feat = compute_features(img, self.cfg, index=i)
+                feat = compute_features(img, self.cfg, index=i,
+                                        clip_model=clip_model)
                 feat.filename = path.name
 
                 is_dup, prev, scores = dedup.check(feat)

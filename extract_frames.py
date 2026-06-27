@@ -17,7 +17,9 @@ import cv2
 from PIL import Image
 from tqdm import tqdm
 
-from deduper import DedupConfig, Deduper, compute_features, imwrite_unicode
+from deduper import (
+    DedupConfig, Deduper, compute_features, imwrite_unicode, load_clip_model,
+)
 from workers import open_video_capture, format_timestamp
 
 
@@ -64,6 +66,17 @@ def extract_frames(video_path, output_dir=None, preset="standard",
     dw.writerow(["frame_index", "timestamp", "duplicate_of_frame",
                  "duplicate_of_filename", "scores"])
 
+    clip_model = None
+    if cfg.use_clip:
+        print("[資訊] 載入 CLIP 模型中…（首次使用會下載權重，約 300MB）")
+        try:
+            clip_model = load_clip_model()
+            print(f"[資訊] CLIP 就緒（device={clip_model.device}）")
+        except Exception as e:
+            print(f"[錯誤] CLIP 載入失敗：{e}")
+            cap.release()
+            sys.exit(1)
+
     dedup = Deduper(cfg)
     saved = 0; duplicate = 0; failed = 0; idx = 0
     pbar = tqdm(total=total_frames if total_frames > 0 else None,
@@ -73,7 +86,7 @@ def extract_frames(video_path, output_dir=None, preset="standard",
             ret, frame = cap.read()
             if not ret: break
             ts = format_timestamp(cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0)
-            feat = compute_features(frame, cfg, index=idx)
+            feat = compute_features(frame, cfg, index=idx, clip_model=clip_model)
             is_dup, prev, scores = dedup.check(feat)
             if is_dup:
                 duplicate += 1
