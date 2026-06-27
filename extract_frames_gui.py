@@ -28,8 +28,8 @@ from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
     QListWidgetItem, QMainWindow, QMenu, QMenuBar, QMessageBox, QProgressBar,
-    QPushButton, QSizePolicy, QSpinBox, QStatusBar, QTabWidget, QTextEdit,
-    QToolButton, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSpinBox, QStatusBar, QTabWidget,
+    QTextEdit, QToolButton, QVBoxLayout, QWidget,
 )
 
 from deduper import DedupConfig
@@ -158,6 +158,21 @@ QToolTip {
     background: #161b22; color: #e6edf3;
     border: 1px solid #30363d; border-radius: 6px; padding: 4px;
 }
+
+QLabel#previewFrame {
+    background: #0d1117; color: #6e7681;
+    border: 1px solid #30363d; border-radius: 10px;
+}
+
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px 2px 2px 0; }
+QScrollBar::handle:vertical { background: #30363d; border-radius: 5px; min-height: 32px; }
+QScrollBar::handle:vertical:hover { background: #484f58; }
+QScrollBar:horizontal { background: transparent; height: 10px; margin: 0 2px 2px 2px; }
+QScrollBar::handle:horizontal { background: #30363d; border-radius: 5px; min-width: 32px; }
+QScrollBar::handle:horizontal:hover { background: #484f58; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 """
 
 LIGHT_QSS = """
@@ -176,6 +191,11 @@ QPushButton:hover { background: #eaeef2; }
 QPushButton#primary { background: #2da44e; color: white; border-color: #2c974b; }
 QPushButton#primary:hover { background: #2c974b; }
 QPushButton#danger { background: #ffffff; color: #cf222e; border-color: #cf222e; }
+QToolButton { background: #f6f8fa; color: #1f2328; border: 1px solid #d0d7de; border-radius: 6px; padding: 4px 8px; }
+QToolButton:hover { background: #eaeef2; }
+QCheckBox { color: #1f2328; spacing: 8px; }
+QCheckBox::indicator { width: 16px; height: 16px; border-radius: 4px; border: 1px solid #afb8c1; background: #ffffff; }
+QCheckBox::indicator:checked { background: #0969da; border-color: #0969da; }
 QProgressBar { background: #eaeef2; border: 1px solid #d0d7de; border-radius: 8px; text-align: center; }
 QProgressBar::chunk { background: #1f6feb; border-radius: 6px; }
 QTextEdit { background: #ffffff; border: 1px solid #d0d7de; border-radius: 10px; font-family: Consolas, monospace; }
@@ -185,6 +205,15 @@ QTabBar::tab:selected { background: #ffffff; color: #0969da; border-bottom: 2px 
 QMenuBar { background: #ffffff; border-bottom: 1px solid #d0d7de; }
 QMenu { background: #ffffff; border: 1px solid #d0d7de; }
 QStatusBar { background: #ffffff; color: #57606a; border-top: 1px solid #d0d7de; }
+QLabel#previewFrame { background: #f6f8fa; color: #8b949e; border: 1px solid #d0d7de; border-radius: 10px; }
+QScrollArea { background: transparent; border: none; }
+QScrollBar:vertical { background: transparent; width: 10px; margin: 2px 2px 2px 0; }
+QScrollBar::handle:vertical { background: #d0d7de; border-radius: 5px; min-height: 32px; }
+QScrollBar::handle:vertical:hover { background: #afb8c1; }
+QScrollBar:horizontal { background: transparent; height: 10px; }
+QScrollBar::handle:horizontal { background: #d0d7de; border-radius: 5px; min-width: 32px; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 """
 
 
@@ -279,13 +308,14 @@ class AlgoPanel(QGroupBox):
             adv_l.addWidget(field_label(lab), r, 1)
             adv_l.addWidget(sp, r, 2)
 
-        # hash 大小 / 視窗
-        adv_l.addWidget(field_label("Hash 大小"), 5, 0)
+        # hash 大小 / 視窗（對齊上方的「閾值欄」col1=說明 / col2=數值）
         self.sp_hash_size = QSpinBox(); self.sp_hash_size.setRange(4, 32); self.sp_hash_size.setValue(8)
-        adv_l.addWidget(self.sp_hash_size, 5, 1)
-        adv_l.addWidget(field_label("時間視窗 (0=全比)"), 5, 2)
         self.sp_window = QSpinBox(); self.sp_window.setRange(0, 99999); self.sp_window.setValue(0)
-        adv_l.addWidget(self.sp_window, 5, 3)
+        adv_l.addWidget(field_label("Hash 大小"), 5, 1)
+        adv_l.addWidget(self.sp_hash_size, 5, 2)
+        adv_l.addWidget(field_label("時間視窗 (0=全比)"), 6, 1)
+        adv_l.addWidget(self.sp_window, 6, 2)
+        adv_l.setColumnStretch(3, 1)
 
         self.adv.setVisible(False)
         v.addWidget(self.adv)
@@ -352,7 +382,6 @@ class StatsAndPreview(QWidget):
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setMinimumHeight(220)
         self.preview.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.preview.setStyleSheet("background:#0d1117;color:#6e7681;border:1px solid #30363d;border-radius:10px;")
         pl.addWidget(self.preview, 1)
         bottom.addWidget(pcard, 1)
 
@@ -935,11 +964,21 @@ class MainWindow(QMainWindow):
         self.tab_extract_only  = TabExtractOnly(self)
         self.tab_folder_dedup  = TabFolderDedup(self)
         self.tab_batch         = TabBatch(self)
-        self.tabs.addTab(self.tab_extract_dedup, "🎬  提取 + 去重")
-        self.tabs.addTab(self.tab_extract_only,  "📸  只提取")
-        self.tabs.addTab(self.tab_folder_dedup,  "🗂  僅去重資料夾")
-        self.tabs.addTab(self.tab_batch,         "📚  批次處理")
+        # 每個分頁包進可捲動區，內容超過視窗高度時改用捲軸，避免元件被壓爛
+        self.tabs.addTab(self._scrollable(self.tab_extract_dedup), "🎬  提取 + 去重")
+        self.tabs.addTab(self._scrollable(self.tab_extract_only),  "📸  只提取")
+        self.tabs.addTab(self._scrollable(self.tab_folder_dedup),  "🗂  僅去重資料夾")
+        self.tabs.addTab(self._scrollable(self.tab_batch),         "📚  批次處理")
         v.addWidget(self.tabs, 1)
+
+    @staticmethod
+    def _scrollable(widget) -> QScrollArea:
+        sa = QScrollArea()
+        sa.setWidgetResizable(True)
+        sa.setFrameShape(QFrame.Shape.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        sa.setWidget(widget)
+        return sa
 
     def _build_menubar(self):
         mb: QMenuBar = self.menuBar()
