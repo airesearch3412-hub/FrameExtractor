@@ -473,8 +473,13 @@ class BatchWorker(QThread):
         self.jpg_quality = jpg_quality
         self.mode = mode
         self._stop = False
+        self._current = None     # 目前正在跑的子 worker（同步 run）
 
-    def stop(self): self._stop = True
+    def stop(self):
+        self._stop = True
+        cur = self._current
+        if cur is not None:      # 把中止往下傳給正在處理的子任務
+            cur.stop()
 
     def run(self):
         try:
@@ -505,8 +510,13 @@ class BatchWorker(QThread):
                 w.progress.connect(lambda c, t: self.sub_progress.emit(c, t))
                 w.finished_ok.connect(lambda s: done.update(stats=s))
                 w.error.connect(lambda e: done.update(err=e))
+                # 若在建立到執行的空檔已被要求中止，直接把旗標帶進子 worker
+                self._current = w
+                if self._stop:
+                    w.stop()
                 # 注意：這裡用 run() 而非 start()，避免額外執行緒
                 w.run()
+                self._current = None
 
                 if done["err"]:
                     self.log.emit(f"✖ 失敗：{done['err']}")

@@ -1852,11 +1852,27 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, e):
         self._save_prefs()
+        # 收集所有仍在執行的背景 worker
+        workers = []
         for tab in [self.tab_extract_dedup, self.tab_extract_only,
                     self.tab_folder_dedup, self.tab_batch, self.tab_batch_crop]:
             w = getattr(tab, "worker", None)
-            if w and w.isRunning():
-                w.stop(); w.wait(2000)
+            if w is not None and w.isRunning():
+                workers.append(w)
+        # 1) 先要求停止，並切斷訊號 —— 避免關閉過程中 worker 仍 emit 到
+        #    正在被銷毀的元件（會造成存取已釋放記憶體而崩潰）。
+        for w in workers:
+            try:
+                w.blockSignals(True)
+            except Exception:
+                pass
+            w.stop()
+        # 2) 一定要等執行緒真正結束才放行關閉，否則 Qt 會因
+        #    「QThread: Destroyed while thread is still running」而崩潰。
+        for w in workers:
+            if not w.wait(5000):
+                w.terminate()      # 卡住不理會 stop 時的最後保險
+                w.wait()
         e.accept()
 
 
