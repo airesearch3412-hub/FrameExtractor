@@ -22,8 +22,11 @@ import sys
 import webbrowser
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QSize
-from PyQt6.QtGui import QAction, QPalette, QColor, QPixmap, QKeySequence, QImage
+from PyQt6.QtCore import Qt, QSize, QRect, QRectF, QPoint, QPointF, pyqtSignal
+from PyQt6.QtGui import (
+    QAction, QPalette, QColor, QPixmap, QKeySequence, QImage,
+    QPainter, QPen, QBrush,
+)
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
@@ -35,7 +38,7 @@ from PyQt6.QtWidgets import (
 from deduper import DedupConfig
 from workers import (
     ExtractDedupWorker, ExtractOnlyWorker, FolderDedupWorker, BatchWorker,
-    format_duration,
+    BatchCropWorker, IMAGE_EXTS, format_duration,
 )
 
 
@@ -969,6 +972,553 @@ class TabBatch(QWidget):
             self.worker.stop()
 
 
+# ===================== 互動式框選裁剪預覽 =====================
+class CropSelector(QWidget):
+    """在等比例縮放的預覽圖上，用滑鼠「框選 / 拖曳 / 縮放」裁剪區域。
+    對外座標一律換算回「原圖像素」(left, top, right, bottom)。"""
+
+    cropChanged = pyqtSignal(int, int, int, int)   # left, top, right, bottom（原圖座標）
+
+    TOL = 10            # 控制點命中容差（widget px）
+    HANDLE = 8          # 控制點繪製邊長（widget px）
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(320)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setMouseTracking(True)
+        self._pix = None            # 原圖 QPixmap（全解析度）
+        self._scaled = None         # 快取的縮放後 QPixmap
+        self._scaled_for = None     # 快取對應尺寸 (tw, th)
+        self._img_w = 0
+        self._img_h = 0
+        self._crop = None           # QRect（原圖座標，x/y/width/height）
+        self._mode = None           # None / 'new' / 'move' / 'resize'
+        self._handle = None
+        self._press_img = None      # 按下時原圖座標 (ix, iy)
+        self._press_crop = None     # 按下時的裁剪框（QRect）
+
+    # ---------- 載入 / 取值 ----------
+    def set_image(self, qimg: QImage):
+        if qimg is None or qimg.isNull():
+            self._pix = None; self._img_w = self._img_h = 0
+            self._crop = None; self._scaled = None
+            self.update(); return
+        self._pix = QPixmap.fromImage(qimg)
+        self._img_w, self._img_h = qimg.width(), qimg.height()
+        self._scaled = None
+        if self._crop is None:
+            self._crop = QRect(0, 0, self._img_w, self._img_h)
+        else:
+            self._crop = self._clamp_rect(self._crop)
+        self.update()
+        self._emit()
+
+    def has_image(self):
+        return self._pix is not None
+
+    def crop_box(self):
+        if not self._crop:
+            return None
+        r = self._crop
+        return r.x(), r.y(), r.x() + r.width(), r.y() + r.height()
+
+    def set_crop(self, left, top, right, bottom):
+        """由數值框設定（不回拋 cropChanged，避免訊號迴圈）。
+        回傳夾住後的實際裁剪框，呼叫端應據此回寫數值框以保持一致。"""
+        if not self._pix:
+            return None
+        r = QRect(int(left), int(top),
+                  int(right) - int(left), int(bottom) - int(top))
+        self._crop = self._clamp_rect(r)
+        self.update()
+        return self.crop_box()
+
+    def reset_full(self):
+        if self._pix:
+            self._crop = QRect(0, 0, self._img_w, self._img_h)
+            self.update(); self._emit()
+
+    # ---------- 座標換算 ----------
+    def _geom(self):
+        if not self._img_w or not self._img_h:
+            return 1.0, 0.0, 0.0
+        s = min(self.width() / self._img_w, self.height() / self._img_h)
+        # 取整數原點，讓底圖、變暗層、清晰裁剪區三者像素對齊（避免 1px 接縫）
+        ox = round((self.width() - self._img_w * s) / 2.0)
+        oy = round((self.height() - self._img_h * s) / 2.0)
+        return s, ox, oy
+
+    def _widget_to_img(self, wx, wy):
+        s, ox, oy = self._geom()
+        if s == 0:
+            return 0, 0
+        ix = max(0, min(self._img_w, (wx - ox) / s))
+        iy = max(0, min(self._img_h, (wy - oy) / s))
+        return int(round(ix)), int(round(iy))
+
+    def _crop_widget_rectf(self):
+        s, ox, oy = self._geom()
+        r = self._crop
+        return QRectF(ox + r.x() * s, oy + r.y() * s,
+                      r.width() * s, r.height() * s)
+
+    def _handle_points(self):
+        cr = self._crop_widget_rectf()
+        cx, cy = cr.center().x(), cr.center().y()
+        return {
+            'tl': (cr.left(), cr.top()),   'tr': (cr.right(), cr.top()),
+            'bl': (cr.left(), cr.bottom()), 'br': (cr.right(), cr.bottom()),
+            't': (cx, cr.top()), 'b': (cx, cr.bottom()),
+            'l': (cr.left(), cy), 'r': (cr.right(), cy),
+        }
+
+    def _hit_handle(self, pos):
+        pts = self._handle_points()
+        for name in ('tl', 'tr', 'bl', 'br', 't', 'b', 'l', 'r'):
+            hx, hy = pts[name]
+            if abs(pos.x() - hx) <= self.TOL and abs(pos.y() - hy) <= self.TOL:
+                return name
+        return None
+
+    # ---------- clamp ----------
+    def _clamp_rect(self, r):
+        """夾住四邊到影像範圍內，最小 1px。"""
+        x0 = max(0, r.x()); y0 = max(0, r.y())
+        x1 = min(self._img_w, r.x() + r.width())
+        y1 = min(self._img_h, r.y() + r.height())
+        w = max(1, x1 - x0); h = max(1, y1 - y0)
+        return QRect(x0, y0, w, h)
+
+    def _clamp_move(self, r):
+        """平移時保持寬高，只夾位置。"""
+        w = min(r.width(), self._img_w); h = min(r.height(), self._img_h)
+        x = max(0, min(r.x(), self._img_w - w))
+        y = max(0, min(r.y(), self._img_h - h))
+        return QRect(x, y, w, h)
+
+    # ---------- 繪製 ----------
+    def _scaled_pixmap(self, s):
+        tw = max(1, round(self._img_w * s)); th = max(1, round(self._img_h * s))
+        if self._scaled is None or self._scaled_for != (tw, th):
+            self._scaled = self._pix.scaled(
+                tw, th, Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation)
+            self._scaled_for = (tw, th)
+        return self._scaled
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), self.palette().color(QPalette.ColorRole.Base))
+        if not self._pix:
+            p.setPen(QColor("#6e7681"))
+            p.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                       "請先載入預覽圖\n（在左側清單點一張圖片）")
+            return
+
+        s, ox, oy = self._geom()
+        disp = self._scaled_pixmap(s)
+        p.drawPixmap(int(round(ox)), int(round(oy)), disp)
+
+        if self._crop:
+            iw, ih = disp.width(), disp.height()
+            # 整張影像區域變暗
+            p.fillRect(QRectF(ox, oy, iw, ih), QColor(0, 0, 0, 120))
+            # 裁剪區域還原成清晰（把該區塊原圖再畫一次）
+            r = self._crop
+            src = QRectF(r.x() * s, r.y() * s, r.width() * s, r.height() * s)
+            tgt = QRectF(ox + src.x(), oy + src.y(), src.width(), src.height())
+            p.drawPixmap(tgt, disp, src)
+
+            cr = self._crop_widget_rectf()
+            # 邊框
+            pen = QPen(QColor("#1f6feb")); pen.setWidth(2)
+            p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+            p.drawRect(cr)
+            # 控制點
+            p.setBrush(QBrush(QColor("#ffffff")))
+            p.setPen(QPen(QColor("#1f6feb")))
+            hs = self.HANDLE
+            for hx, hy in self._handle_points().values():
+                p.drawRect(QRectF(hx - hs / 2, hy - hs / 2, hs, hs))
+            # 尺寸標籤
+            label = f"{r.width()} × {r.height()}"
+            p.setPen(QColor("#ffffff"))
+            tx, ty = cr.left() + 4, max(cr.top() - 6, oy + 12)
+            p.fillRect(QRectF(tx - 3, ty - 14, 9 + 8 * len(label), 18),
+                       QColor(0, 0, 0, 150))
+            p.drawText(QPointF(tx, ty), label)
+
+    def resizeEvent(self, e):
+        self._scaled = None
+        super().resizeEvent(e)
+
+    # ---------- 滑鼠互動 ----------
+    def _emit(self):
+        if self._crop:
+            r = self._crop
+            self.cropChanged.emit(r.x(), r.y(),
+                                  r.x() + r.width(), r.y() + r.height())
+
+    def mousePressEvent(self, e):
+        if not self._pix or e.button() != Qt.MouseButton.LeftButton:
+            return
+        pos = e.position().toPoint()
+        self._press_img = self._widget_to_img(pos.x(), pos.y())
+        self._press_crop = QRect(self._crop) if self._crop else None
+        handle = self._hit_handle(pos) if self._crop else None
+        if handle:
+            self._mode = 'resize'; self._handle = handle
+        elif self._crop and self._crop_widget_rectf().contains(QPointF(pos)):
+            self._mode = 'move'
+        else:
+            self._mode = 'new'
+            ix, iy = self._press_img
+            self._crop = QRect(ix, iy, 0, 0)
+        self.update()
+
+    def mouseMoveEvent(self, e):
+        pos = e.position().toPoint()
+        if self._mode is None:
+            self._update_cursor(pos)
+            return
+        ix, iy = self._widget_to_img(pos.x(), pos.y())
+        if self._mode == 'new':
+            x0, y0 = self._press_img
+            self._crop = self._clamp_rect(
+                QRect(min(x0, ix), min(y0, iy), abs(ix - x0), abs(iy - y0)))
+        elif self._mode == 'move':
+            dx = ix - self._press_img[0]; dy = iy - self._press_img[1]
+            r = QRect(self._press_crop); r.translate(dx, dy)
+            self._crop = self._clamp_move(r)
+        elif self._mode == 'resize':
+            self._crop = self._clamp_rect(self._resize_by_handle(ix, iy))
+        self.update(); self._emit()
+
+    def _resize_by_handle(self, ix, iy):
+        r = self._press_crop
+        x0, y0 = r.x(), r.y()
+        x1, y1 = r.x() + r.width(), r.y() + r.height()
+        h = self._handle
+        if 'l' in h: x0 = ix
+        if 'r' in h: x1 = ix
+        if 't' in h: y0 = iy
+        if 'b' in h: y1 = iy
+        nx0, nx1 = min(x0, x1), max(x0, x1)
+        ny0, ny1 = min(y0, y1), max(y0, y1)
+        return QRect(nx0, ny0, max(1, nx1 - nx0), max(1, ny1 - ny0))
+
+    def mouseReleaseEvent(self, e):
+        if self._mode == 'new' and self._crop and \
+                (self._crop.width() < 2 or self._crop.height() < 2):
+            # 只是輕點一下，視為無效框選 → 還原先前的裁剪框
+            self._crop = self._press_crop or QRect(0, 0, self._img_w, self._img_h)
+        self._mode = None; self._handle = None
+        self.update(); self._emit()
+
+    def _update_cursor(self, pos):
+        handle = self._hit_handle(pos) if self._crop else None
+        if handle in ('tl', 'br'):
+            self.setCursor(Qt.CursorShape.SizeFDiagCursor)
+        elif handle in ('tr', 'bl'):
+            self.setCursor(Qt.CursorShape.SizeBDiagCursor)
+        elif handle in ('l', 'r'):
+            self.setCursor(Qt.CursorShape.SizeHorCursor)
+        elif handle in ('t', 'b'):
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+        elif self._crop and self._crop_widget_rectf().contains(QPointF(pos)):
+            self.setCursor(Qt.CursorShape.SizeAllCursor)
+        else:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+
+
+# ===================== 分頁 5：批次裁剪 =====================
+class TabBatchCrop(QWidget):
+    def __init__(self, mainwin):
+        super().__init__()
+        self.mainwin = mainwin; self.worker = None
+        self._build()
+
+    def _build(self):
+        v = QVBoxLayout(self); v.setContentsMargins(14, 14, 14, 14); v.setSpacing(12)
+
+        # 上半：左清單 / 右預覽
+        top = QHBoxLayout(); top.setSpacing(12)
+
+        lc, ll = make_card()
+        ll.addWidget(section_label("圖片清單（建議皆為相同尺寸）"))
+        self.list_w = QListWidget(); self.list_w.setMinimumHeight(180)
+        self.list_w.currentRowChanged.connect(self._on_row)
+        ll.addWidget(self.list_w, 1)
+        brow = QHBoxLayout()
+        b_add = QPushButton("+ 加入圖片"); b_add.clicked.connect(self.add_images)
+        b_dir = QPushButton("+ 加入資料夾"); b_dir.clicked.connect(self.add_dir)
+        b_rm = QPushButton("− 移除選取"); b_rm.clicked.connect(self.remove_sel)
+        b_clr = QPushButton("清空"); b_clr.clicked.connect(self._clear_list)
+        for b in (b_add, b_dir, b_rm, b_clr):
+            brow.addWidget(b)
+        brow.addStretch(1)
+        ll.addLayout(brow)
+        ll.addWidget(field_label("點清單中的圖片即可載入為右側預覽；裁剪框會套用到所有圖片"))
+        top.addWidget(lc, 1)
+
+        pc, pl = make_card(12, 8)
+        pl.addWidget(section_label("裁剪預覽（可直接在圖上框選 / 拖曳 / 縮放）"))
+        self.selector = CropSelector()
+        self.selector.cropChanged.connect(self._on_crop_changed)
+        pl.addWidget(self.selector, 1)
+
+        grid = QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(6)
+        self.sp_left = QSpinBox(); self.sp_top = QSpinBox()
+        self.sp_right = QSpinBox(); self.sp_bottom = QSpinBox()
+        for sp in (self.sp_left, self.sp_top, self.sp_right, self.sp_bottom):
+            sp.setRange(0, 0); sp.valueChanged.connect(self._on_spin)
+        grid.addWidget(field_label("左"), 0, 0); grid.addWidget(self.sp_left, 0, 1)
+        grid.addWidget(field_label("上"), 0, 2); grid.addWidget(self.sp_top, 0, 3)
+        grid.addWidget(field_label("右"), 0, 4); grid.addWidget(self.sp_right, 0, 5)
+        grid.addWidget(field_label("下"), 0, 6); grid.addWidget(self.sp_bottom, 0, 7)
+        self.lbl_size = QLabel("裁剪尺寸：—"); self.lbl_size.setObjectName("fieldLabel")
+        grid.addWidget(self.lbl_size, 1, 0, 1, 5)
+        b_full = QPushButton("重設為整張"); b_full.clicked.connect(self.selector.reset_full)
+        grid.addWidget(b_full, 1, 6, 1, 2)
+        grid.setColumnStretch(8, 1)
+        pl.addLayout(grid)
+        top.addWidget(pc, 1)
+        v.addLayout(top, 1)
+
+        # 輸出設定
+        oc, ol = make_card()
+        ol.addWidget(section_label("輸出設定"))
+        ol.addWidget(field_label("輸出資料夾"))
+        r1 = QHBoxLayout()
+        self.out_edit = QLineEdit()
+        self.out_edit.setPlaceholderText("選擇裁剪後的輸出資料夾…")
+        r1.addWidget(self.out_edit, 1)
+        b_out = QPushButton("瀏覽"); b_out.clicked.connect(self.choose_out)
+        r1.addWidget(b_out)
+        ol.addLayout(r1)
+
+        orow = QHBoxLayout()
+        orow.addWidget(field_label("輸出格式"))
+        self.fmt = QComboBox(); self.fmt.addItems(["JPG", "PNG"])
+        self.fmt.currentIndexChanged.connect(self._on_fmt)
+        orow.addWidget(self.fmt)
+        orow.addWidget(field_label("JPG 品質"))
+        self.quality = QSpinBox(); self.quality.setRange(1, 100); self.quality.setValue(95)
+        self.quality.setSuffix(" %")
+        orow.addWidget(self.quality)
+        orow.addSpacing(12)
+        self.cb_resize = QCheckBox("統一輸出尺寸")
+        self.cb_resize.toggled.connect(self._on_resize_toggle)
+        orow.addWidget(self.cb_resize)
+        self.sp_ow = QSpinBox(); self.sp_ow.setRange(1, 99999); self.sp_ow.setEnabled(False)
+        self.sp_oh = QSpinBox(); self.sp_oh.setRange(1, 99999); self.sp_oh.setEnabled(False)
+        orow.addWidget(self.sp_ow); orow.addWidget(field_label("×")); orow.addWidget(self.sp_oh)
+        orow.addStretch(1)
+        ol.addLayout(orow)
+        v.addWidget(oc)
+
+        # 操作列
+        ar = QHBoxLayout()
+        self.start_btn = QPushButton("▶  開始裁剪"); self.start_btn.setObjectName("primary")
+        self.start_btn.setMinimumHeight(36); self.start_btn.clicked.connect(self.start)
+        self.stop_btn = QPushButton("■  中止"); self.stop_btn.setObjectName("danger")
+        self.stop_btn.setMinimumHeight(36); self.stop_btn.setEnabled(False)
+        self.stop_btn.clicked.connect(self.stop)
+        self.open_btn = QPushButton("📂  打開輸出資料夾"); self.open_btn.setEnabled(False)
+        self.open_btn.clicked.connect(self.open_out)
+        ar.addWidget(self.start_btn); ar.addWidget(self.stop_btn); ar.addWidget(self.open_btn)
+        ar.addStretch(1); v.addLayout(ar)
+
+        self.progress = QProgressBar(); self.progress.setFormat("%v / %m 張  ·  %p%")
+        v.addWidget(self.progress)
+        self.sp = StatsAndPreview(("圖片總數", "已裁剪", "失敗", "略過"))
+        v.addWidget(self.sp, 1)
+
+    # ---------- 清單 ----------
+    def add_images(self):
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "選擇圖片",
+            filter="圖片 (*.jpg *.jpeg *.png *.bmp *.webp *.tiff *.tif);;所有 (*.*)")
+        self._add_paths(paths)
+
+    def add_dir(self):
+        d = QFileDialog.getExistingDirectory(self, "選擇圖片資料夾")
+        if not d:
+            return
+        paths = [str(p) for p in sorted(Path(d).iterdir())
+                 if p.is_file() and p.suffix.lower() in IMAGE_EXTS]
+        if not paths:
+            QMessageBox.information(self, "提示", "該資料夾內找不到圖片")
+            return
+        self._add_paths(paths)
+        if not self.out_edit.text().strip():
+            self.out_edit.setText(str(Path(d) / "cropped"))
+
+    def _add_paths(self, paths):
+        first_added = None
+        for p in paths:
+            self.list_w.addItem(QListWidgetItem(p))
+            if first_added is None:
+                first_added = p
+        if first_added and not self.out_edit.text().strip():
+            self.out_edit.setText(str(Path(first_added).parent / "cropped"))
+        # 沒有預覽時，自動載入第一張
+        if first_added and not self.selector.has_image():
+            self.list_w.setCurrentRow(0)
+
+    def remove_sel(self):
+        for it in self.list_w.selectedItems():
+            self.list_w.takeItem(self.list_w.row(it))
+
+    def _clear_list(self):
+        self.list_w.clear()
+        self.selector.set_image(None)
+        self.lbl_size.setText("裁剪尺寸：—")
+
+    def _on_row(self, row):
+        if row < 0 or row >= self.list_w.count():
+            return
+        self._load_preview(self.list_w.item(row).text())
+
+    def _load_preview(self, path):
+        try:
+            data = Path(path).read_bytes()
+        except Exception as e:
+            QMessageBox.warning(self, "錯誤", f"無法讀取圖片：{e}")
+            return
+        img = QImage()
+        if not img.loadFromData(data) or img.isNull():
+            QMessageBox.warning(self, "錯誤", f"不支援或損毀的圖片：{Path(path).name}")
+            return
+        w, h = img.width(), img.height()
+        # 左/上是 inclusive 起點，最大到 w-1 / h-1；右/下是 exclusive 終點，到 w / h
+        for sp, mx in ((self.sp_left, max(0, w - 1)), (self.sp_right, w),
+                       (self.sp_top, max(0, h - 1)), (self.sp_bottom, h)):
+            sp.blockSignals(True); sp.setRange(0, mx); sp.blockSignals(False)
+        self.selector.set_image(img)   # 觸發 cropChanged → 同步數值框
+
+    # ---------- 裁剪框雙向同步 ----------
+    def _on_crop_changed(self, l, t, r, b):
+        for sp, val in ((self.sp_left, l), (self.sp_top, t),
+                        (self.sp_right, r), (self.sp_bottom, b)):
+            sp.blockSignals(True); sp.setValue(val); sp.blockSignals(False)
+        self._update_size_label(l, t, r, b)
+
+    def _on_spin(self):
+        l = self.sp_left.value(); t = self.sp_top.value()
+        r = self.sp_right.value(); b = self.sp_bottom.value()
+        box = self.selector.set_crop(l, t, r, b)
+        if box:   # 把夾住後的實際裁剪框回寫，讓數值框 / 標籤 / 預覽一致
+            l, t, r, b = box
+            for sp, val in ((self.sp_left, l), (self.sp_top, t),
+                            (self.sp_right, r), (self.sp_bottom, b)):
+                sp.blockSignals(True); sp.setValue(val); sp.blockSignals(False)
+        self._update_size_label(l, t, r, b)
+
+    def _update_size_label(self, l, t, r, b):
+        cw, ch = r - l, b - t
+        if cw > 0 and ch > 0:
+            self.lbl_size.setText(f"裁剪尺寸：{cw} × {ch}")
+            if not self.cb_resize.isChecked():
+                self.sp_ow.blockSignals(True); self.sp_oh.blockSignals(True)
+                self.sp_ow.setValue(cw); self.sp_oh.setValue(ch)
+                self.sp_ow.blockSignals(False); self.sp_oh.blockSignals(False)
+        else:
+            self.lbl_size.setText("裁剪尺寸：無效（右須大於左、下須大於上）")
+
+    # ---------- 輸出設定 ----------
+    def _on_fmt(self, idx):
+        self.quality.setEnabled(idx == 0)   # 僅 JPG 用品質
+
+    def _on_resize_toggle(self, on):
+        self.sp_ow.setEnabled(on); self.sp_oh.setEnabled(on)
+        if not on:   # 取消勾選 → 回到「依裁剪框」
+            self._on_spin()
+
+    def choose_out(self):
+        d = QFileDialog.getExistingDirectory(self, "選擇輸出資料夾")
+        if d:
+            self.out_edit.setText(d)
+
+    # ---------- 執行 ----------
+    def start(self):
+        n = self.list_w.count()
+        if n == 0:
+            QMessageBox.warning(self, "錯誤", "請先加入圖片"); return
+        if not self.selector.has_image():
+            QMessageBox.warning(self, "錯誤", "請先點清單中的圖片載入預覽並框選裁剪範圍"); return
+        box = self.selector.crop_box()
+        if not box or (box[2] - box[0]) < 1 or (box[3] - box[1]) < 1:
+            QMessageBox.warning(self, "錯誤", "裁剪範圍無效，請重新框選"); return
+        out = self.out_edit.text().strip()
+        if not out:
+            QMessageBox.warning(self, "錯誤", "請選擇輸出資料夾"); return
+
+        paths = [self.list_w.item(i).text() for i in range(n)]
+        out_format = "jpg" if self.fmt.currentIndex() == 0 else "png"
+        resize_to = ((self.sp_ow.value(), self.sp_oh.value())
+                     if self.cb_resize.isChecked() else None)
+
+        self.sp.reset(); self.progress.setValue(0)
+        self.sp.set_kpi(0, f"{n:,}")   # 「圖片總數」固定為總數，不隨進度跳動
+        self.start_btn.setEnabled(False); self.stop_btn.setEnabled(True)
+        self.open_btn.setEnabled(False)
+        self.mainwin.set_status("裁剪中…", "#58a6ff")
+
+        self.worker = BatchCropWorker(
+            paths, out, box, out_format=out_format,
+            jpg_quality=self.quality.value(), resize_to=resize_to)
+        self.worker.progress.connect(
+            lambda c, t: (self.progress.setMaximum(t), self.progress.setValue(c)))
+        self.worker.log.connect(self.sp.append_log)
+        self.worker.preview.connect(lambda img, i: self.sp.set_preview(img))
+        self.worker.stats_update.connect(lambda d, f, s: (
+            self.sp.set_kpi(1, f"{d:,}"), self.sp.set_kpi(2, f"{f:,}"),
+            self.sp.set_kpi(3, f"{s:,}")))
+        self.worker.finished_ok.connect(self._done)
+        self.worker.error.connect(self._err)
+        self.worker.start()
+
+    def _done(self, s):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.open_btn.setEnabled(True)
+        self.sp.set_kpi(0, f"{s['total']:,}")
+        self.sp.set_kpi(1, f"{s['done']:,}")
+        self.sp.set_kpi(2, f"{s['failed']:,}")
+        self.sp.set_kpi(3, f"{s['skipped']:,}")
+        stopped = s.get("stopped", False)
+        title = "批次裁剪已中止" if stopped else "批次裁剪完成"
+        self.mainwin.set_status("已中止" if stopped else "已完成",
+                                "#f0883e" if stopped else "#3fb950")
+        big_info(self, title, [
+            ("圖片總數", f"{s['total']:,}"),
+            ("已處理", f"{s.get('processed', s['done']):,}"),
+            ("成功裁剪", f"{s['done']:,}"),
+            ("失敗", f"{s['failed']:,}"),
+            ("略過", f"{s['skipped']:,}"),
+            ("輸出尺寸", s.get("out_size", "")),
+            ("執行時間", format_duration(s.get("elapsed", 0))),
+        ], footer=s["output_dir"])
+
+    def _err(self, msg):
+        self.start_btn.setEnabled(True); self.stop_btn.setEnabled(False)
+        self.mainwin.set_status("錯誤", "#f85149")
+        QMessageBox.critical(self, "錯誤", msg)
+        self.sp.append_log(f"✖ [錯誤] {msg}")
+
+    def stop(self):
+        if self.worker and self.worker.isRunning():
+            self.worker.stop()
+            self.sp.append_log("⏹ 中止中…")
+            self.mainwin.set_status("中止中", "#f0883e")
+
+    def open_out(self):
+        out = self.out_edit.text().strip()
+        if out and Path(out).exists():
+            open_folder(out)
+
+
 # ===================== 工具 =====================
 def open_folder(path):
     if sys.platform.startswith("win"):
@@ -1036,7 +1586,7 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout()
         tbox = QVBoxLayout(); tbox.setSpacing(2)
         title = QLabel(self.APP_NAME); title.setObjectName("title")
-        sub = QLabel(f"v{self.APP_VERSION} · 影片提取 · 智慧去重 · 批次處理")
+        sub = QLabel(f"v{self.APP_VERSION} · 影片提取 · 智慧去重 · 批次處理 · 批次裁剪")
         sub.setObjectName("subtitle")
         tbox.addWidget(title); tbox.addWidget(sub)
         h.addLayout(tbox); h.addStretch(1)
@@ -1050,11 +1600,13 @@ class MainWindow(QMainWindow):
         self.tab_extract_only  = TabExtractOnly(self)
         self.tab_folder_dedup  = TabFolderDedup(self)
         self.tab_batch         = TabBatch(self)
+        self.tab_batch_crop    = TabBatchCrop(self)
         # 每個分頁包進可捲動區，內容超過視窗高度時改用捲軸，避免元件被壓爛
         self.tabs.addTab(self._scrollable(self.tab_extract_dedup), "🎬  提取 + 去重")
         self.tabs.addTab(self._scrollable(self.tab_extract_only),  "📸  只提取")
         self.tabs.addTab(self._scrollable(self.tab_folder_dedup),  "🗂  僅去重資料夾")
         self.tabs.addTab(self._scrollable(self.tab_batch),         "📚  批次處理")
+        self.tabs.addTab(self._scrollable(self.tab_batch_crop),    "✂  批次裁剪")
         v.addWidget(self.tabs, 1)
 
     @staticmethod
@@ -1156,7 +1708,8 @@ class MainWindow(QMainWindow):
         return [self.tab_extract_dedup.out_edit,
                 self.tab_extract_only.out_edit,
                 self.tab_folder_dedup.in_edit,
-                self.tab_batch.out_edit][idx]
+                self.tab_batch.out_edit,
+                self.tab_batch_crop.out_edit][idx]
 
     def _menu_open_video(self):
         path, _ = QFileDialog.getOpenFileName(self, "開啟影片",
@@ -1199,7 +1752,8 @@ class MainWindow(QMainWindow):
     def _menu_clear_log(self):
         idx = self.tabs.currentIndex()
         sp = [self.tab_extract_dedup.sp, self.tab_extract_only.sp,
-              self.tab_folder_dedup.sp, self.tab_batch.sp][idx]
+              self.tab_folder_dedup.sp, self.tab_batch.sp,
+              self.tab_batch_crop.sp][idx]
         sp.log.clear()
 
     def _menu_prefs(self):
@@ -1228,6 +1782,8 @@ class MainWindow(QMainWindow):
             "<b>📸 只提取</b>：完整保留所有幀（或指定間隔），不做去重。<br><br>"
             "<b>🗂 僅去重資料夾</b>：對既有圖片資料夾去重（移動／刪除／僅報表）。<br><br>"
             "<b>📚 批次處理</b>：一次處理多個影片，自動建立子資料夾。<br><br>"
+            "<b>✂ 批次裁剪</b>：對一批相同尺寸的圖片，在預覽上框選裁剪範圍，"
+            "套用到全部並輸出成統一格式（JPG/PNG，可選統一尺寸）。<br><br>"
             "<b>演算法等級</b>：<br>"
             "&nbsp;• <b>快速</b>：dHash<br>"
             "&nbsp;• <b>標準</b>：dHash + pHash（推薦）<br>"
@@ -1297,7 +1853,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, e):
         self._save_prefs()
         for tab in [self.tab_extract_dedup, self.tab_extract_only,
-                    self.tab_folder_dedup, self.tab_batch]:
+                    self.tab_folder_dedup, self.tab_batch, self.tab_batch_crop]:
             w = getattr(tab, "worker", None)
             if w and w.isRunning():
                 w.stop(); w.wait(2000)
