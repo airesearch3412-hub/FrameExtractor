@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FrameExtractor 網站版 — 高保真原型</title>
+
+<!-- FOUC 防護：套用 styles.css 前先決定主題（§11.4）。只設 data-theme，不寫死任何色。 -->
+<script>
+  (function () {
+    try {
+      var saved = localStorage.getItem('fe-theme');
+      var sys = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', saved || sys);
+    } catch (e) {
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  })();
+</script>
+
+<link rel="stylesheet" href="styles.css">
+
+<!-- ============================================================================
+     原型專用樣式（prototype-only）：僅供「殼層腳手架 + Demo 控制列」，
+     全部走 styles.css 既有 design tokens（var(--…)），不寫死任何色/尺寸。
+     正式上線時 Header 選單 / 狀態列 / Demo 列由 Jarvis 整併到設計系統。
+     ========================================================================== -->
+<style>
+  /* 通用列（橫向排欄位）*/
+  .row { display: flex; gap: var(--space-3); flex-wrap: wrap; align-items: flex-end; }
+  .row > .field { flex: 1; min-width: 12ch; }
+  .field--inline .field__row { align-items: center; }
+
+  /* Header 工具選單（▾ 選單）*/
+  .menu-wrap { position: relative; }
+  .menu {
+    position: absolute; right: 0; top: calc(100% + var(--space-1));
+    min-width: 220px; padding: var(--space-1);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    box-shadow: var(--shadow-dialog);
+    z-index: var(--z-header);
+  }
+  .menu[hidden] { display: none; }
+  .menu__item {
+    display: flex; align-items: center; gap: var(--space-2);
+    width: 100%; padding: var(--space-2) var(--space-3);
+    background: transparent; border: 0; border-radius: var(--radius-xs);
+    color: var(--text-primary); font: var(--fw-regular) var(--font-base) var(--font-sans);
+    text-align: left; cursor: pointer;
+  }
+  .menu__item:hover { background: var(--bg-btn); }
+  .menu__item:focus-visible { box-shadow: var(--focus-ring); }
+  .menu__sep { height: 1px; margin: var(--space-1) 0; background: var(--border); }
+  .menu__key { margin-left: auto; color: var(--text-secondary); font-size: var(--font-label); }
+
+  /* 底部狀態列 */
+  .statusbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: var(--space-3); margin-top: auto;
+    padding: var(--space-2) var(--space-4);
+    background: var(--bg-card);
+    border-top: 1px solid var(--border);
+    font-size: var(--font-label); color: var(--text-secondary);
+  }
+  .statusbar__left { display: inline-flex; align-items: center; gap: var(--space-2); min-width: 0; }
+  .statusbar__dot { width: var(--space-2); height: var(--space-2); border-radius: 50%; background: currentColor; flex-shrink: 0; }
+
+  /* Demo 控制列（原型專用，明確標示非正式 UI）*/
+  .demo-bar {
+    display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap;
+    padding: var(--space-2) var(--space-4);
+    background: var(--bg-card);
+    border-bottom: 1px dashed var(--accent);
+    font-size: var(--font-label);
+  }
+  .demo-bar__tag {
+    display: inline-flex; align-items: center; gap: var(--space-1);
+    font-weight: var(--fw-semibold); color: var(--accent-bright);
+    flex-shrink: 0;
+  }
+  .demo-bar__group { display: inline-flex; align-items: center; gap: var(--space-1); flex-wrap: wrap; }
+  .demo-bar__label { color: var(--text-secondary); }
+  .demo-bar .btn {
+    min-height: var(--space-7);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--font-label); font-weight: var(--fw-medium);
+  }
+  .demo-bar .select { height: var(--space-7); }
+
+  /* 進階面板「僅 dedup 模式生效」灰化說明 */
+  .advanced--muted { opacity: 0.55; }
+  .advanced__note { font-size: var(--font-label); color: var(--text-secondary); }
+
+  /* 對話框內：使用說明分頁清單 */
+  .help-list { margin: 0; padding-left: var(--space-5); display: flex; flex-direction: column; gap: var(--space-2); }
+  .about-row { display: grid; grid-template-columns: auto 1fr; gap: var(--space-2) var(--space-4); }
+  .about-row dt { color: var(--text-secondary); font-size: var(--font-label); }
+  .about-row dd { margin: 0; font-size: var(--font-base); }
+
+  /* 結果圖庫分頁切換 */
+  .seg { display: inline-flex; gap: var(--space-1); }
+
+  /* 日誌外殼：承載「↓ 跳到最新」浮鈕（.log__jump 為 absolute，需 positioned 容器）*/
+  .log-wrap { position: relative; display: flex; }
+  .log-wrap > .log { flex: 1; min-width: 0; }
+</style>
+</head>
+
+<body>
+
+<!-- ============================================================================
+     全域單例 sr-only 播報區（§8.4：role=status aria-live=polite）
+     承載進度摘要（每 10%/10s）、完成播報、日誌里程碑。全站唯一。
+     ========================================================================== -->
+<div id="srStatus" class="sr-only sr-status" role="status" aria-live="polite"></div>
+
+<div class="app">
+
+  <!-- ====================== Demo 控制列（原型專用）====================== -->
+  <div class="demo-bar" id="demoBar" aria-label="原型 Demo 控制列（非正式 UI）">
+    <span class="demo-bar__tag" title="此列僅用於原型展示，不會出現在正式產品">⚙ Demo 控制（非正式 UI）</span>
+
+    <div class="demo-bar__group">
+      <span class="demo-bar__label">作用分頁狀態：</span>
+      <button class="btn" data-demo-state="idle">空</button>
+      <button class="btn" data-demo-state="uploading">上傳中</button>
+      <button class="btn" data-demo-state="running">處理中</button>
+      <button class="btn" data-demo-state="done">完成</button>
+      <button class="btn" data-demo-state="error">錯誤</button>
+      <button class="btn" data-demo-state="cancelled">中止</button>
+    </div>
+
+    <div class="demo-bar__group">
+      <span class="demo-bar__label">對話框：</span>
+      <button class="btn" data-demo-dialog="about">關於</button>
+      <button class="btn" data-demo-dialog="help">說明</button>
+      <button class="btn" data-demo-dialog="prefs">偏好</button>
+      <button class="btn" data-demo-dialog="server">伺服器選擇器</button>
+      <button class="btn" data-demo-dialog="summary">完成摘要</button>
+      <button class="btn" data-demo-dialog="summary-zerodup">完成(0 重複)</button>
+      <button class="btn" data-demo-dialog="summary-diskfail">磁碟失敗</button>
+      <button class="btn" data-demo-dialog="results">結果圖庫</button>
+      <button class="btn" data-demo-dialog="confirm">刪除確認</button>
+    </div>
+
+    <div class="demo-bar__group">
+      <span class="demo-bar__label">其他：</span>
+      <button class="btn" data-demo-toast="error">錯誤 Toast</button>
+      <select class="select" id="demoGpu" aria-label="GPU 偵測四態">
+        <option value="busy">GPU：偵測中</option>
+        <option value="good">GPU：有 GPU</option>
+        <option value="warn">GPU：無 GPU</option>
+        <option value="error">GPU：偵測失敗</option>
+      </select>
+      <button class="btn" data-demo-mock>灌入 mock 資料</button>
+    </div>
+  </div>
+
+  <!-- ====================== Header（§2.3）====================== -->
+  <header class="header">
+    <div class="brand">
+      <h1 class="brand__title">FrameExtractor</h1>
+      <p class="brand__subtitle">v2.0 · 影片提取 · 智慧去重 · 批次處理 · 批次裁剪</p>
+    </div>
+
+    <div class="header__tools">
+      <!-- 狀態 pill（§4.15）-->
+      <span class="pill pill--idle" id="statusPill" role="status" aria-live="polite">就緒</span>
+
+      <!-- 主題切換（§11.4）-->
+      <button class="btn btn--icon" id="themeToggle" aria-label="切換深色/淺色主題（Ctrl/⌘+T）" title="切換主題 (Ctrl/⌘+T)">
+        <span class="icon" aria-hidden="true" id="themeIcon">🌙</span>
+      </button>
+
+      <!-- 說明 -->
+      <button class="btn btn--icon" data-open-dialog="dlgHelp" aria-label="使用說明" title="使用說明">
+        <span class="icon" aria-hidden="true">?</span>
+      </button>
+
+      <!-- 關於 -->
+      <button class="btn btn--icon" data-open-dialog="dlgAbout" aria-label="關於 FrameExtractor" title="關於">
+        <span class="icon" aria-hidden="true">ⓘ</span>
+      </button>
+
+      <!-- 頂部選單 -->
+      <div class="menu-wrap">
+        <button class="btn btn--icon" id="menuBtn" aria-haspopup="true" aria-expanded="false" aria-controls="topMenu" aria-label="開啟主選單" title="選單">
+          <span class="icon" aria-hidden="true">☰</span>
+        </button>
+        <div class="menu" id="topMenu" role="menu" aria-label="主選單" hidden>
+          <button class="menu__item" role="menuitem" data-menu="open-video"><span aria-hidden="true">🎬</span> 開啟影片…</button>
+          <button class="menu__item" role="menuitem" data-menu="open-folder"><span aria-hidden="true">🗂</span> 開啟資料夾去重…</button>
+          <div class="menu__sep" role="separator"></div>
+          <button class="menu__item" role="menuitem" data-menu="export-report"><span aria-hidden="true">📄</span> 匯出報表</button>
+          <button class="menu__item" role="menuitem" data-menu="copy-path"><span aria-hidden="true">📋</span> 複製輸出路徑</button>
+          <button class="menu__item" role="menuitem" data-menu="clear-log"><span aria-hidden="true">🧹</span> 清除日誌</button>
+          <div class="menu__sep" role="separator"></div>
+          <button class="menu__item" role="menuitem" data-menu="prefs"><span aria-hidden="true">⚙</span> 偏好設定…</button>
+          <button class="menu__item" role="menuitem" data-menu="theme"><span aria-hidden="true">◐</span> 切換主題 <span class="menu__key">Ctrl/⌘+T</span></button>
+          <div class="menu__sep" role="separator"></div>
+          <button class="menu__item" role="menuitem" data-menu="help"><span aria-hidden="true">?</span> 使用說明</button>
+          <button class="menu__item" role="menuitem" data-menu="check-update"><span aria-hidden="true">⟳</span> 檢查更新</button>
+          <button class="menu__item" role="menuitem" data-menu="about"><span aria-hidden="true">ⓘ</span> 關於</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ====================== Tab 列（§4.9）====================== -->
+  <div class="tabs" role="tablist" aria-label="功能分頁">
+    <button class="tab" role="tab" id="tab-1" aria-controls="panel-1" aria-selected="true"  tabindex="0">🎬 提取 + 去重</button>
+    <button class="tab" role="tab" id="tab-2" aria-controls="panel-2" aria-selected="false" tabindex="-1">📸 只提取</button>
+    <button class="tab" role="tab" id="tab-3" aria-controls="panel-3" aria-selected="false" tabindex="-1">🗂 僅去重資料夾</button>
+    <button class="tab" role="tab" id="tab-4" aria-controls="panel-4" aria-selected="false" tabindex="-1">📚 批次處理</button>
+    <button class="tab" role="tab" id="tab-5" aria-controls="panel-5" aria-selected="false" tabindex="-1">✂ 批次裁剪</button>
+  </div>
+
+  <!-- ============================================================================
+       Tab 1 — 🎬 提取 + 去重（§5.1）
+       ========================================================================== -->
+  <section class="panel is-active" role="tabpanel" id="panel-1" aria-labelledby="tab-1" tabindex="0" data-tab="1">
+
+    <section class="card">
+      <h2 class="card__title">影片來源</h2>
+
+      <div class="input-toggle" role="group" aria-label="輸入方式">
+        <button class="btn input-toggle__btn" data-input-mode="upload" aria-pressed="true">上傳檔案</button>
+        <button class="btn input-toggle__btn" data-input-mode="server" aria-pressed="false">瀏覽伺服器</button>
+      </div>
+
+      <div class="dropzone" tabindex="0" role="button" aria-label="上傳影片檔案，或拖曳到此" data-dropzone>
+        <span class="icon" aria-hidden="true">⬆</span>
+        <span class="dropzone__hint">拖曳影片到這裡，或點擊選擇</span>
+        <span class="dropzone__sub">支援 mp4 / mov / avi / mkv… · 中文檔名 OK · 單檔上限 2 GB</span>
+        <input type="file" class="dropzone__input" accept="video/*" aria-hidden="true" tabindex="-1">
+      </div>
+
+      <div class="field field--inline">
+        <label class="field__label" for="t1-video">影片檔案</label>
+        <div class="field__row">
+          <input class="input" id="t1-video" type="text" placeholder="選擇影片…" readonly>
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+
+      <div class="field field--inline">
+        <label class="field__label" for="t1-out">輸出資料夾</label>
+        <div class="field__row">
+          <input class="input" id="t1-out" type="text" placeholder="影片名稱_frames（留空自動建立）">
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- 進階去重面板（AlgoPanel，JS 注入；§4.16）-->
+    <section class="card" data-algo="1">
+      <h2 class="card__title">演算法設定</h2>
+      <div data-algo-mount></div>
+    </section>
+
+    <section class="card">
+      <h2 class="card__title">輸出參數</h2>
+      <div class="row">
+        <div class="field">
+          <label class="field__label" for="t1-q">JPG 品質（1–100）</label>
+          <div class="field__row">
+            <input class="number" id="t1-q" type="number" min="1" max="100" placeholder="100" value="100">
+            <span class="field__suffix">%</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="actions actions--sticky">
+      <button class="btn btn--primary" data-action="start"><span class="icon" aria-hidden="true">▶</span><span class="btn__label">開始處理</span></button>
+      <button class="btn btn--danger" data-action="abort" disabled><span class="icon" aria-hidden="true">■</span><span class="btn__label">中止</span></button>
+      <button class="btn" data-action="result" disabled>檢視結果</button>
+    </div>
+
+    <div data-stats="1"></div>
+  </section>
+
+  <!-- ============================================================================
+       Tab 2 — 📸 只提取（§5.2）
+       ========================================================================== -->
+  <section class="panel" role="tabpanel" id="panel-2" aria-labelledby="tab-2" tabindex="0" data-tab="2" hidden>
+
+    <section class="card">
+      <h2 class="card__title">影片來源</h2>
+      <div class="input-toggle" role="group" aria-label="輸入方式">
+        <button class="btn input-toggle__btn" data-input-mode="upload" aria-pressed="true">上傳檔案</button>
+        <button class="btn input-toggle__btn" data-input-mode="server" aria-pressed="false">瀏覽伺服器</button>
+      </div>
+      <div class="dropzone" tabindex="0" role="button" aria-label="上傳影片檔案，或拖曳到此" data-dropzone>
+        <span class="icon" aria-hidden="true">⬆</span>
+        <span class="dropzone__hint">拖曳影片到這裡，或點擊選擇</span>
+        <span class="dropzone__sub">支援 mp4 / mov / avi / mkv… · 中文檔名 OK · 單檔上限 2 GB</span>
+        <input type="file" class="dropzone__input" accept="video/*" aria-hidden="true" tabindex="-1">
+      </div>
+      <div class="field field--inline">
+        <label class="field__label" for="t2-video">影片檔案</label>
+        <div class="field__row">
+          <input class="input" id="t2-video" type="text" placeholder="選擇影片…" readonly>
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+      <div class="field field--inline">
+        <label class="field__label" for="t2-out">輸出資料夾</label>
+        <div class="field__row">
+          <input class="input" id="t2-out" type="text" placeholder="選擇輸出資料夾…">
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="card__title">提取參數</h2>
+      <div class="row">
+        <div class="field">
+          <label class="field__label" for="t2-step">抽幀間隔（每 N 幀取 1）</label>
+          <input class="number" id="t2-step" type="number" min="1" max="9999" placeholder="1" value="1" aria-describedby="t2-step-help">
+          <span class="field__helper" id="t2-step-help">1 = 每幀；30 = 每 30 幀取一張</span>
+        </div>
+        <div class="field">
+          <label class="field__label" for="t2-q">JPG 品質（1–100）</label>
+          <div class="field__row">
+            <input class="number" id="t2-q" type="number" min="1" max="100" placeholder="100" value="100">
+            <span class="field__suffix">%</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="actions actions--sticky">
+      <button class="btn btn--primary" data-action="start"><span class="icon" aria-hidden="true">▶</span><span class="btn__label">開始提取</span></button>
+      <button class="btn btn--danger" data-action="abort" disabled><span class="icon" aria-hidden="true">■</span><span class="btn__label">中止</span></button>
+      <button class="btn" data-action="result" disabled>檢視結果</button>
+    </div>
+
+    <div data-stats="2"></div>
+  </section>
+
+  <!-- ============================================================================
+       Tab 3 — 🗂 僅去重資料夾（§5.3）
+       ========================================================================== -->
+  <section class="panel" role="tabpanel" id="panel-3" aria-labelledby="tab-3" tabindex="0" data-tab="3" hidden>
+
+    <section class="card">
+      <h2 class="card__title">圖片來源</h2>
+      <div class="input-toggle" role="group" aria-label="輸入方式">
+        <button class="btn input-toggle__btn" data-input-mode="server" aria-pressed="true">瀏覽伺服器</button>
+        <button class="btn input-toggle__btn" data-input-mode="upload" aria-pressed="false">上傳多圖</button>
+      </div>
+
+      <!-- 上傳多圖 dropzone（預設隱藏：本 tab 預設為「瀏覽伺服器」模式，§5.3）-->
+      <div class="dropzone" tabindex="0" role="button" aria-label="上傳圖片，或拖曳到此" data-dropzone hidden>
+        <span class="icon" aria-hidden="true">⬆</span>
+        <span class="dropzone__hint">拖曳圖片到這裡，或點擊選擇（可多張）</span>
+        <span class="dropzone__sub">支援 jpg / png / bmp / webp / tiff… · 中文檔名 OK</span>
+        <input type="file" class="dropzone__input" accept="image/*" multiple aria-hidden="true" tabindex="-1">
+      </div>
+
+      <div class="field field--inline">
+        <label class="field__label" for="t3-dir">圖片來源資料夾</label>
+        <div class="field__row">
+          <input class="input" id="t3-dir" type="text" placeholder="選擇含 jpg/png 的資料夾…">
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label class="field__label" for="t3-action">重複圖片處理方式</label>
+        <select class="select" id="t3-action">
+          <option value="move" selected>移動到 _duplicates 子資料夾（建議）</option>
+          <option value="delete">直接刪除（危險！）</option>
+          <option value="report">僅產生報表，不動原檔</option>
+        </select>
+      </div>
+    </section>
+
+    <section class="card" data-algo="3">
+      <h2 class="card__title">演算法設定</h2>
+      <div data-algo-mount></div>
+    </section>
+
+    <div class="actions actions--sticky">
+      <button class="btn btn--primary" data-action="start"><span class="icon" aria-hidden="true">▶</span><span class="btn__label">開始去重</span></button>
+      <button class="btn btn--danger" data-action="abort" disabled><span class="icon" aria-hidden="true">■</span><span class="btn__label">中止</span></button>
+      <button class="btn" data-action="result" disabled>檢視結果</button>
+    </div>
+
+    <div data-stats="3"></div>
+  </section>
+
+  <!-- ============================================================================
+       Tab 4 — 📚 批次處理（§5.4）
+       ========================================================================== -->
+  <section class="panel" role="tabpanel" id="panel-4" aria-labelledby="tab-4" tabindex="0" data-tab="4" hidden>
+
+    <section class="card">
+      <h2 class="card__title">影片清單</h2>
+      <div class="filelist__head">
+        <span class="filelist__count" data-filelist-count>共 0 個檔案</span>
+        <div class="filelist__actions">
+          <button class="btn btn--ghost" data-list="add">+ 加入影片</button>
+          <button class="btn btn--ghost" data-list="add-folder">+ 加入資料夾</button>
+          <button class="btn btn--ghost" data-list="remove">− 移除選取</button>
+          <button class="btn btn--ghost" data-list="clear">清空</button>
+        </div>
+      </div>
+      <ul class="filelist" data-filelist role="listbox" aria-multiselectable="true" aria-label="已選影片清單"></ul>
+
+      <div class="field field--inline">
+        <label class="field__label" for="t4-out">輸出根目錄（每個影片建立子資料夾）</label>
+        <div class="field__row">
+          <input class="input" id="t4-out" type="text" placeholder="選擇輸出根目錄…">
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="card__title">處理模式</h2>
+      <div class="row">
+        <div class="field">
+          <label class="field__label" for="t4-mode">模式</label>
+          <select class="select" id="t4-mode" data-batch-mode>
+            <option value="dedup" selected>提取 + 去重</option>
+            <option value="extract">只提取不去重</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field__label" for="t4-q">JPG 品質（1–100）</label>
+          <div class="field__row">
+            <input class="number" id="t4-q" type="number" min="1" max="100" placeholder="100" value="100">
+            <span class="field__suffix">%</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" data-algo="4">
+      <h2 class="card__title">演算法設定 <span class="advanced__note">（僅在「提取 + 去重」模式生效）</span></h2>
+      <div data-algo-mount></div>
+    </section>
+
+    <div class="actions actions--sticky">
+      <button class="btn btn--primary" data-action="start"><span class="icon" aria-hidden="true">▶</span><span class="btn__label">開始批次</span></button>
+      <button class="btn btn--danger" data-action="abort" disabled><span class="icon" aria-hidden="true">■</span><span class="btn__label">中止</span></button>
+      <button class="btn" data-action="result" disabled>檢視全部結果</button>
+    </div>
+
+    <div data-stats="4"></div>
+  </section>
+
+  <!-- ============================================================================
+       Tab 5 — ✂ 批次裁剪（§5.5）
+       ========================================================================== -->
+  <section class="panel" role="tabpanel" id="panel-5" aria-labelledby="tab-5" tabindex="0" data-tab="5" hidden>
+
+    <div class="split">
+      <!-- 左：圖片清單 -->
+      <section class="card">
+        <h2 class="card__title">圖片清單</h2>
+        <div class="filelist__head">
+          <span class="filelist__count" data-filelist-count>共 0 張圖片</span>
+          <div class="filelist__actions">
+            <button class="btn btn--ghost" data-list="add">+ 加入圖片</button>
+            <button class="btn btn--ghost" data-list="add-folder">+ 加入資料夾</button>
+            <button class="btn btn--ghost" data-list="remove">− 移除選取</button>
+            <button class="btn btn--ghost" data-list="clear">清空</button>
+          </div>
+        </div>
+        <ul class="filelist" data-filelist role="listbox" aria-multiselectable="true" aria-label="已加入圖片清單"></ul>
+        <p class="cropper__hint">提示：裁剪框會套用到所有圖片。</p>
+      </section>
+
+      <!-- 右：裁剪預覽 -->
+      <section class="card">
+        <h2 class="card__title">裁剪預覽</h2>
+        <div class="cropper" id="cropper">
+          <div class="cropper__canvas-wrap" id="cropWrap">
+            <canvas class="cropper__canvas" id="cropCanvas" role="img"
+                    aria-label="裁剪預覽，目前範圍 左 0 上 0 右 0 下 0"></canvas>
+            <div class="cropper__overlay" id="cropOverlay">
+              <span class="icon" aria-hidden="true">🖼</span>
+              <span>先在左側加入圖片</span>
+              <span class="cropper__hint">這裡就能框選要裁剪的範圍，框會套用到所有圖片</span>
+            </div>
+          </div>
+
+          <div class="cropper__fields">
+            <div class="field">
+              <label class="field__label" for="crop-l">左</label>
+              <input class="number" id="crop-l" type="number" min="0" value="0" data-crop-field="l">
+            </div>
+            <div class="field">
+              <label class="field__label" for="crop-t">上</label>
+              <input class="number" id="crop-t" type="number" min="0" value="0" data-crop-field="t">
+            </div>
+            <div class="field">
+              <label class="field__label" for="crop-r">右</label>
+              <input class="number" id="crop-r" type="number" min="0" value="0" data-crop-field="r">
+            </div>
+            <div class="field">
+              <label class="field__label" for="crop-b">下</label>
+              <input class="number" id="crop-b" type="number" min="0" value="0" data-crop-field="b">
+            </div>
+          </div>
+
+          <div class="actions">
+            <button class="btn" id="cropReset">重設為整張</button>
+            <span class="cropper__size" id="cropSize" aria-live="off">裁剪尺寸：—</span>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2 class="card__title">輸出設定</h2>
+      <div class="field field--inline">
+        <label class="field__label" for="t5-out">輸出資料夾</label>
+        <div class="field__row">
+          <input class="input" id="t5-out" type="text" placeholder="選擇裁剪後的輸出資料夾…">
+          <button class="btn" data-browse="server">瀏覽伺服器</button>
+        </div>
+      </div>
+      <div class="row">
+        <div class="field">
+          <label class="field__label" for="t5-fmt">輸出格式</label>
+          <select class="select" id="t5-fmt" data-crop-format>
+            <option value="jpg" selected>JPG</option>
+            <option value="png">PNG</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="field__label" for="t5-q">JPG 品質（1–100）</label>
+          <div class="field__row">
+            <input class="number" id="t5-q" type="number" min="1" max="100" placeholder="95" value="95" data-crop-quality>
+            <span class="field__suffix">%</span>
+          </div>
+        </div>
+      </div>
+      <div class="row">
+        <label class="checkbox">
+          <input type="checkbox" class="checkbox__input" id="t5-resize" data-crop-resize>
+          <span class="checkbox__box" aria-hidden="true"></span>
+          <span>統一輸出尺寸</span>
+        </label>
+        <div class="field">
+          <label class="field__label" for="t5-w">寬</label>
+          <input class="number" id="t5-w" type="number" min="1" max="99999" value="1280" disabled data-crop-w>
+        </div>
+        <div class="field">
+          <label class="field__label" for="t5-h">高</label>
+          <input class="number" id="t5-h" type="number" min="1" max="99999" value="720" disabled data-crop-h>
+        </div>
+      </div>
+      <p class="field__helper">未勾選＝輸出尺寸跟隨裁剪框。</p>
+    </section>
+
+    <div class="actions actions--sticky">
+      <button class="btn btn--primary" data-action="start"><span class="icon" aria-hidden="true">▶</span><span class="btn__label">開始裁剪</span></button>
+      <button class="btn btn--danger" data-action="abort" disabled><span class="icon" aria-hidden="true">■</span><span class="btn__label">中止</span></button>
+      <button class="btn" data-action="result" disabled>檢視結果</button>
+    </div>
+
+    <div data-stats="5"></div>
+  </section>
+
+  <!-- ====================== 底部狀態列 ====================== -->
+  <footer class="statusbar">
+    <span class="statusbar__left pill--idle" id="statusbarLeft" style="color:inherit;">
+      <span class="statusbar__dot" aria-hidden="true"></span>
+      <span id="statusbarText">就緒</span>
+    </span>
+    <span class="statusbar__right">v2.0</span>
+  </footer>
+</div>
+
+<!-- ============================================================================
+     對話框 / 覆蓋層（原生 <dialog>：showModal 自帶 focus trap + Esc + scrim；§11.5）
+     ========================================================================== -->
+
+<!-- 關於（§10.7）-->
+<dialog class="dialog" id="dlgAbout" aria-labelledby="dlgAbout-title">
+  <div class="dialog__header">
+    <h2 class="dialog__title" id="dlgAbout-title">關於 FrameExtractor</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body">
+    <dl class="about-row">
+      <dt>版本</dt><dd>v2.0</dd>
+      <dt>作者</dt><dd>airesearch3412-hub</dd>
+      <dt>原始碼</dt><dd><a href="https://github.com/airesearch3412-hub/FrameExtractor" target="_blank" rel="noopener">github.com/airesearch3412-hub/FrameExtractor</a></dd>
+      <dt>授權</dt><dd>PolyForm Noncommercial 1.0.0<br><span class="field__helper">非商業用途；商業使用須另洽授權。</span></dd>
+      <dt>核心套件</dt><dd>OpenCV · imagehash · open-clip · FastAPI</dd>
+    </dl>
+  </div>
+  <div class="dialog__footer">
+    <div class="dialog__actions">
+      <button class="btn btn--primary" data-close-dialog>關閉</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 使用說明（§10.7）-->
+<dialog class="dialog" id="dlgHelp" aria-labelledby="dlgHelp-title">
+  <div class="dialog__header">
+    <h2 class="dialog__title" id="dlgHelp-title">使用說明</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body">
+    <h3 class="card__title card__title--plain">五大功能</h3>
+    <ol class="help-list">
+      <li><strong>🎬 提取 + 去重</strong>：從影片抽出畫面並自動去除重複幀。</li>
+      <li><strong>📸 只提取</strong>：依「抽幀間隔」輸出畫面，不做去重。</li>
+      <li><strong>🗂 僅去重資料夾</strong>：對既有圖片資料夾去重（移動 / 刪除 / 僅報表）。</li>
+      <li><strong>📚 批次處理</strong>：一次處理多支影片，各自輸出子資料夾。</li>
+      <li><strong>✂ 批次裁剪</strong>：以同一裁剪框批次裁切多張圖片。</li>
+    </ol>
+    <h3 class="card__title card__title--plain">演算法等級</h3>
+    <ul class="help-list">
+      <li><strong>快速</strong>：dHash（連續幀快篩）</li>
+      <li><strong>標準</strong>：dHash + pHash（推薦）</li>
+      <li><strong>精準</strong>：＋直方圖 + SSIM</li>
+      <li><strong>最精準</strong>：＋CLIP 語意（需 PyTorch，較慢）</li>
+    </ul>
+  </div>
+  <div class="dialog__footer">
+    <div class="dialog__actions">
+      <button class="btn btn--primary" data-close-dialog>我知道了</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 偏好設定 -->
+<dialog class="dialog" id="dlgPrefs" aria-labelledby="dlgPrefs-title">
+  <div class="dialog__header">
+    <h2 class="dialog__title" id="dlgPrefs-title">偏好設定</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body">
+    <div class="field">
+      <label class="field__label" for="pref-theme">主題</label>
+      <select class="select" id="pref-theme">
+        <option value="dark">深色（預設）</option>
+        <option value="light">淺色</option>
+      </select>
+    </div>
+    <div class="field">
+      <label class="field__label" for="pref-upload">單檔上傳上限（GB）</label>
+      <input class="number" id="pref-upload" type="number" min="1" max="50" value="2">
+    </div>
+    <div class="field">
+      <label class="field__label" for="pref-log">日誌顯示上限（行）</label>
+      <input class="number" id="pref-log" type="number" min="500" max="1000" value="800">
+    </div>
+    <div class="field">
+      <label class="field__label" for="pref-timeout">上傳逾時（秒，無進度）</label>
+      <input class="number" id="pref-timeout" type="number" min="10" max="600" value="60">
+    </div>
+  </div>
+  <div class="dialog__footer">
+    <div class="dialog__actions">
+      <button class="btn" data-close-dialog>取消</button>
+      <button class="btn btn--primary" data-close-dialog>儲存</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 伺服器資料夾選擇器（§4.17）-->
+<dialog class="dialog" id="dlgServer" aria-labelledby="dlgServer-title">
+  <div class="dialog__header">
+    <h2 class="dialog__title" id="dlgServer-title">瀏覽伺服器資料夾</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body">
+    <div class="server-browser">
+      <div class="server-browser__crumbs" id="serverCrumbs" aria-label="路徑"></div>
+      <div class="actions">
+        <button class="btn" id="serverUp">↑ 上一層</button>
+      </div>
+      <ul class="server-browser__list" id="serverList" role="listbox" aria-label="資料夾與檔案"></ul>
+      <p class="field__helper" id="serverEmpty" hidden>這個資料夾是空的</p>
+    </div>
+  </div>
+  <div class="dialog__footer">
+    <div class="dialog__actions">
+      <button class="btn" data-close-dialog>取消</button>
+      <button class="btn btn--primary" id="serverChoose">選擇此資料夾</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 完成摘要（§4.19）-->
+<dialog class="dialog" id="dlgSummary" aria-labelledby="dlgSummary-title" aria-describedby="dlgSummary-body">
+  <div class="dialog__header">
+    <h2 class="dialog__title dialog__title--done" id="dlgSummary-title">✔ 處理完成</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body" id="dlgSummary-body">
+    <div class="summary-table" id="summaryTable"></div>
+    <div class="summary__path">
+      <span class="field__label">輸出位置：</span>
+      <a href="#" id="summaryPath">/data/jobs/…/output</a>
+      <button class="btn btn--ghost" id="summaryCopy" aria-label="複製輸出路徑">📋 複製</button>
+    </div>
+  </div>
+  <div class="dialog__footer">
+    <div class="dialog__actions">
+      <button class="btn btn--primary" id="summaryZip" data-action="zip"><span class="btn__label">下載 ZIP</span></button>
+      <button class="btn" id="summaryResults">檢視結果檔</button>
+      <button class="btn" data-close-dialog>關閉</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 結果圖庫 / 結果檔清單（§4.20）-->
+<dialog class="dialog" id="dlgResults" aria-labelledby="dlgResults-title">
+  <div class="dialog__header">
+    <h2 class="dialog__title" id="dlgResults-title">檢視結果</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body">
+    <div class="results">
+      <div class="filelist__head">
+        <div class="seg" role="group" aria-label="結果檢視切換">
+          <button class="btn input-toggle__btn" data-results-view="grid" aria-pressed="true">縮圖</button>
+          <button class="btn input-toggle__btn" data-results-view="files" aria-pressed="false">檔案 / CSV</button>
+        </div>
+        <button class="btn btn--primary" data-action="zip"><span class="btn__label">下載全部 ZIP</span></button>
+      </div>
+      <div class="results__grid" id="resultsGrid" role="list" aria-label="結果縮圖"></div>
+      <ul class="results__files" id="resultsFiles" hidden></ul>
+    </div>
+  </div>
+</dialog>
+
+<!-- 刪除二次確認（§4.22 / §10.6）-->
+<dialog class="dialog" id="dlgConfirm" aria-labelledby="dlgConfirm-title" aria-describedby="dlgConfirm-desc">
+  <div class="dialog__header">
+    <h2 class="dialog__title dialog__title--error" id="dlgConfirm-title">確認直接刪除重複圖片？</h2>
+    <button class="dialog__close" data-close-dialog aria-label="關閉">✕</button>
+  </div>
+  <div class="dialog__body">
+    <p id="dlgConfirm-desc">刪除後無法復原。建議改用「移動到 _duplicates」以便事後檢查。確定要直接刪除嗎？</p>
+  </div>
+  <div class="dialog__footer">
+    <div class="dialog__actions">
+      <button class="btn btn--danger" id="confirmOk">直接刪除</button>
+      <button class="btn btn--primary" id="confirmCancel" data-close-dialog autofocus>取消</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- Lightbox（§4.20）-->
+<div class="lightbox" id="lightbox" role="dialog" aria-modal="true" aria-label="圖片放大檢視" hidden>
+  <button class="btn btn--icon lightbox__close" id="lightboxClose" aria-label="關閉放大檢視">✕</button>
+  <button class="btn btn--icon lightbox__nav lightbox__nav--prev" id="lightboxPrev" aria-label="上一張">‹</button>
+  <img class="lightbox__img" id="lightboxImg" alt="放大檢視的結果圖片">
+  <button class="btn btn--icon lightbox__nav lightbox__nav--next" id="lightboxNext" aria-label="下一張">›</button>
+</div>
+
+<!-- Toast 容器（§4.21）-->
+<div class="toast-container" id="toastContainer" aria-label="通知"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

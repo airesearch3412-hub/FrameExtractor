@@ -1,0 +1,31 @@
+# build context = repo 根目錄；排除不需進映像的內容以縮小 context、加速 build
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+
+# 執行期資料（job 工作目錄、上傳/輸出）
+web/data
+web/data/
+
+# 版本控制
+.git
+.gitignore
+
+# 設計產物：原型與線框不需進映像
+web/prototype
+web/wireframes
+web/UIUX_SPEC.md
+
+# 開發環境
+.venv
+venv
+env
+.vscode
+.idea
+
+# 桌面版測試媒體（不應進映像）
+*.mp4
+*.mov
+*.avi
+*.mkv

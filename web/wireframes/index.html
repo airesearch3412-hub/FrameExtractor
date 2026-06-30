@@ -1,0 +1,734 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FrameExtractor 網站版 — 低保真線框圖</title>
+<link rel="stylesheet" href="wireframe.css">
+</head>
+<body>
+
+<!-- ============ READ-ME BANNER ============ -->
+<div class="wf-readme">
+  <h1>FrameExtractor 網站版 — 低保真線框圖 (Low-fidelity Wireframe)</h1>
+  <p>這是<span class="key">低保真線框</span>：只解決<span class="key">版面與資訊架構</span>，刻意不上品牌色、不做視覺精修。</p>
+  <p>如何閱讀：<span class="key">灰色填充＝未定色的佔位區</span>（圖片/預覽/縮圖）；<span class="key">#999 虛線框＝元件邊界</span>；
+     <span class="key">橘色虛線 ✎ ＝設計旁註</span>（不是最終色）；數字圈 ①②③④⑤⑥＝版面分區。</p>
+  <p>「主要按鈕」用<span class="key">較粗的實線邊框</span>表示（非顏色）；「危險動作」用斜紋底。最終配色見 web_spec.md §7（深色預設可切淺色）。</p>
+  <p>用下方<span class="key">畫面切換器</span>切換 5 個功能 tab、「狀態(States)」「行動裝置重排」與「關於 / 共用對話框」示意。</p>
+</div>
+
+<!-- ============ SCREEN SWITCHER (wireframe demo nav) ============ -->
+<div class="wf-switcher" role="tablist" aria-label="線框畫面切換器">
+  <span class="lbl">畫面切換器 →</span>
+  <button class="active" data-screen="s-extract-dedup">🎬 提取+去重</button>
+  <button data-screen="s-extract-only">📸 只提取</button>
+  <button data-screen="s-folder-dedup">🗂 僅去重資料夾</button>
+  <button data-screen="s-batch">📚 批次處理</button>
+  <button data-screen="s-crop">✂ 批次裁剪</button>
+  <button data-screen="s-states">◧ 狀態(States)</button>
+  <button data-screen="s-mobile">▢ 行動裝置重排</button>
+  <button data-screen="s-about">◔ 關於</button>
+</div>
+
+<!-- ============ APP SHELL (header + tabbar shared across all screens) ============ -->
+<div class="wf-shell">
+
+  <!-- HEADER -->
+  <header class="wf-header">
+    <div>
+      <div class="brand-title">FrameExtractor</div>
+      <div class="brand-sub">v2.0 · 影片提取 · 智慧去重 · 批次處理 · 批次裁剪</div>
+    </div>
+    <div class="wf-header-right">
+      <span class="wf-pill">狀態：閒置</span>
+      <button class="wf-theme-btn" title="主題切換 (Ctrl/⌘+T)" aria-label="切換深色/淺色主題">◐</button>
+    </div>
+  </header>
+  <div class="wf-anno">Header：左標題22/700 + 副標；右上 狀態 pill（閒置/處理中/完成/錯誤）+ 主題切換鈕(深色預設)。pill 與按鈕 aria-live 反映目前 job 狀態。</div>
+
+  <!-- TAB BAR (visual; mirrors switcher) -->
+  <nav class="wf-tabbar" role="tablist" aria-label="功能分頁">
+    <button class="wf-tab" aria-selected="true">🎬 提取 + 去重</button>
+    <button class="wf-tab" aria-selected="false">📸 只提取</button>
+    <button class="wf-tab" aria-selected="false">🗂 僅去重資料夾</button>
+    <button class="wf-tab" aria-selected="false">📚 批次處理</button>
+    <button class="wf-tab" aria-selected="false">✂ 批次裁剪</button>
+  </nav>
+  <div class="wf-anno">鍵盤：Tab 列用 ←/→ 切換、Home/End 跳首尾；選中項 aria-selected=true。≤640px tab 列改水平捲動，不換行。</div>
+
+  <!-- ============================================================
+       SCREEN 1: 🎬 提取 + 去重
+       ============================================================ -->
+  <section class="wf-screen active" id="s-extract-dedup">
+    <div class="wf-content">
+
+      <!-- ① 輸入卡 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">①</span>輸入來源<span class="wf-card-tag">Input</span></div>
+        <div class="wf-dropzone">
+          <div class="big">⬆</div>
+          拖曳影片到此，或<u>點擊選擇檔案</u>（支援中文檔名）
+        </div>
+        <div class="wf-or">— 或 —</div>
+        <div class="wf-field">
+          <label class="wf-label">伺服器資料夾路徑（掛載 /data 內）</label>
+          <div class="wf-row">
+            <input class="wf-input" placeholder="/data/影片/sample.mp4" style="flex:1">
+            <button class="wf-btn">瀏覽…</button>
+          </div>
+        </div>
+        <div class="wf-anno">超長中文檔名以 ellipsis 截斷；大檔上傳走 §States「上傳中」狀態。空狀態文案：「尚未選擇影片」。</div>
+      </div>
+
+      <!-- ② 演算法面板 + 進階 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">②</span>去重演算法<span class="wf-card-tag">Dedup</span></div>
+        <div class="wf-row">
+          <label class="wf-label" style="margin:0">預設等級</label>
+          <select class="wf-select" style="width:180px"><option>標準（預設）</option></select>
+          <span class="wf-anno inline">下拉：快速 / 標準 / 精準 / 最精準。切換時回填下方 use_* 與 5 個閾值。</span>
+        </div>
+
+        <details class="wf-advanced">
+          <summary>進階設定（預設摺疊）</summary>
+          <div class="adv-body">
+            <div class="wf-algo-row"><span class="wf-checkbox checked">啟用 dHash</span><span class="hint">閾值（整數 0–64）</span><input class="wf-input num" value="5"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox checked">啟用 pHash</span><span class="hint">閾值（整數 0–64）</span><input class="wf-input num" value="5"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 直方圖</span><span class="hint">閾值（0–1 step .01）</span><input class="wf-input num" value="0.95"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 SSIM</span><span class="hint">閾值（0–1 step .01）</span><input class="wf-input num" value="0.92"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 CLIP</span><span class="hint">閾值（0–1 step .01）</span><input class="wf-input num" value="0.95"></div>
+            <div class="wf-row" style="margin-top:8px">
+              <label class="wf-label" style="margin:0">Hash 大小</label><input class="wf-input num" value="8">
+              <label class="wf-label" style="margin:0">時間視窗</label><input class="wf-input num" value="0">
+              <label class="wf-label" style="margin:0">CLIP 裝置</label>
+              <select class="wf-select" style="width:150px"><option>自動偵測（預設）</option><option>GPU (CUDA)</option><option>CPU</option></select>
+              <button class="wf-btn">偵測 GPU</button>
+            </div>
+            <div class="wf-anno">偵測 GPU → /api/clip-device-info；回報「✓ GPU：name (torch ver)」/「✗ 無 GPU」/「⚠ reason」。未裝 torch 顯示未安裝。</div>
+          </div>
+        </details>
+      </div>
+
+      <!-- ③ 參數卡 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">③</span>輸出參數<span class="wf-card-tag">Params</span></div>
+        <div class="wf-row">
+          <label class="wf-label" style="margin:0">JPG 品質（1–100）</label>
+          <input class="wf-input num" value="100">
+        </div>
+      </div>
+
+      <!-- ④ 操作列 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">④</span>操作<span class="wf-card-tag">Actions</span></div>
+        <div class="wf-opbar">
+          <button class="wf-btn primary">▶ 開始提取＋去重</button>
+          <button class="wf-btn danger" disabled>■ 中止</button>
+          <button class="wf-btn ghost" disabled>⬇ 下載 ZIP</button>
+          <button class="wf-btn ghost" disabled>📄 檢視結果檔</button>
+        </div>
+        <div class="wf-anno">未開始時 中止/下載/檢視 為 disabled(灰)。所有按鈕 ≥44px 觸控目標、可 Tab 聚焦、focus 有外框。</div>
+      </div>
+
+      <!-- ⑤ 進度條 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑤</span>進度<span class="wf-card-tag">Progress</span></div>
+        <div class="wf-progress-label"><span>處理中… 幀 0 / 0</span><span>0%</span></div>
+        <div class="wf-progress"><div class="fill" style="width:0%"></div></div>
+        <div class="wf-anno">進度 aria-live=polite；經 SSE progress 事件更新。</div>
+      </div>
+
+      <!-- ⑥ StatsAndPreview -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑥</span>統計與預覽<span class="wf-card-tag">Stats&Preview</span></div>
+        <div class="wf-kpi-grid">
+          <div class="wf-kpi"><div class="kpi-label">總幀數</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">保留</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">重複</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">去重率</div><div class="kpi-value">0.0%</div></div>
+        </div>
+        <div class="wf-stats-row" style="margin-top:16px">
+          <div class="wf-preview">[ 即時預覽框 ]<br>灰階佔位＝目前處理幀</div>
+          <div class="wf-log"><span class="ts">[00:00]</span> 等待開始…
+（日誌等寬字，aria-live=polite，自動捲到底）</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 2: 📸 只提取
+       ============================================================ -->
+  <section class="wf-screen" id="s-extract-only">
+    <div class="wf-content">
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">①</span>輸入來源<span class="wf-card-tag">Input</span></div>
+        <div class="wf-dropzone"><div class="big">⬆</div>拖曳影片 / 點擊選擇（支援中文檔名）</div>
+        <div class="wf-or">— 或 —</div>
+        <div class="wf-row"><input class="wf-input" placeholder="/data/影片/sample.mp4" style="flex:1"><button class="wf-btn">瀏覽…</button></div>
+      </div>
+
+      <div class="wf-anno">只提取無去重 → 無 ②演算法面板。直接到參數卡。</div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">③</span>輸出參數<span class="wf-card-tag">Params</span></div>
+        <div class="wf-row">
+          <label class="wf-label" style="margin:0">幀間隔 frame_step（1–9999）</label><input class="wf-input num" value="1">
+          <label class="wf-label" style="margin:0">JPG 品質（1–100）</label><input class="wf-input num" value="100">
+        </div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">④</span>操作<span class="wf-card-tag">Actions</span></div>
+        <div class="wf-opbar">
+          <button class="wf-btn primary">▶ 開始提取</button>
+          <button class="wf-btn danger" disabled>■ 中止</button>
+          <button class="wf-btn ghost" disabled>⬇ 下載 ZIP</button>
+          <button class="wf-btn ghost" disabled>📄 檢視結果檔</button>
+        </div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑤</span>進度<span class="wf-card-tag">Progress</span></div>
+        <div class="wf-progress-label"><span>幀 0 / 0</span><span>0%</span></div>
+        <div class="wf-progress"><div class="fill" style="width:0%"></div></div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑥</span>統計與預覽<span class="wf-card-tag">Stats&Preview</span></div>
+        <div class="wf-kpi-grid">
+          <div class="wf-kpi"><div class="kpi-label">總幀數</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">已輸出</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">—</div><div class="kpi-value empty">—</div></div>
+          <div class="wf-kpi"><div class="kpi-label">—</div><div class="kpi-value empty">—</div></div>
+        </div>
+        <div class="wf-anno">只提取的 KPI 只有 2 個有值，後兩格畫成「—」灰字佔位，保留 4 欄版面一致。</div>
+        <div class="wf-stats-row" style="margin-top:16px">
+          <div class="wf-preview">[ 即時預覽框 ]</div>
+          <div class="wf-log"><span class="ts">[00:00]</span> 等待開始…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 3: 🗂 僅去重資料夾
+       ============================================================ -->
+  <section class="wf-screen" id="s-folder-dedup">
+    <div class="wf-content">
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">①</span>輸入來源（資料夾 / 多圖上傳）<span class="wf-card-tag">Input</span></div>
+        <div class="wf-dropzone"><div class="big">⬆</div>拖曳多張圖片 / 點擊選擇</div>
+        <div class="wf-or">— 或 —</div>
+        <div class="wf-row"><input class="wf-input" placeholder="/data/相簿/" style="flex:1"><button class="wf-btn">瀏覽資料夾…</button></div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">②</span>去重演算法<span class="wf-card-tag">Dedup</span></div>
+        <div class="wf-row">
+          <label class="wf-label" style="margin:0">預設等級</label>
+          <select class="wf-select" style="width:180px"><option>標準（預設）</option></select>
+        </div>
+        <details class="wf-advanced">
+          <summary>進階設定（預設摺疊）</summary>
+          <div class="adv-body">
+            <div class="wf-algo-row"><span class="wf-checkbox checked">啟用 dHash</span><span class="hint">整數 0–64</span><input class="wf-input num" value="5"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox checked">啟用 pHash</span><span class="hint">整數 0–64</span><input class="wf-input num" value="5"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 直方圖</span><span class="hint">0–1 step .01</span><input class="wf-input num" value="0.95"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 SSIM</span><span class="hint">0–1 step .01</span><input class="wf-input num" value="0.92"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 CLIP</span><span class="hint">0–1 step .01</span><input class="wf-input num" value="0.95"></div>
+            <div class="wf-row" style="margin-top:8px">
+              <label class="wf-label" style="margin:0">Hash 大小</label><input class="wf-input num" value="8">
+              <label class="wf-label" style="margin:0">時間視窗</label><input class="wf-input num" value="0">
+              <label class="wf-label" style="margin:0">CLIP 裝置</label><select class="wf-select" style="width:150px"><option>自動偵測（預設）</option><option>GPU (CUDA)</option><option>CPU</option></select>
+              <button class="wf-btn">偵測 GPU</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">③</span>處理動作<span class="wf-card-tag">Params</span></div>
+        <div class="wf-row">
+          <label class="wf-label" style="margin:0">重複檔處理</label>
+          <select class="wf-select" style="width:200px"><option>移動到 _duplicates（預設）</option></select>
+        </div>
+        <div class="wf-anno">action：move / delete / report。選 delete 時，按「開始」前彈出 confirm() 二次確認。</div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">④</span>操作<span class="wf-card-tag">Actions</span></div>
+        <div class="wf-opbar">
+          <button class="wf-btn primary">▶ 開始去重</button>
+          <button class="wf-btn danger" disabled>■ 中止</button>
+          <button class="wf-btn ghost" disabled>⬇ 下載 ZIP</button>
+          <button class="wf-btn ghost" disabled>📄 檢視結果檔</button>
+        </div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑤</span>進度<span class="wf-card-tag">Progress</span></div>
+        <div class="wf-progress-label"><span>圖片 0 / 0</span><span>0%</span></div>
+        <div class="wf-progress"><div class="fill" style="width:0%"></div></div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑥</span>統計與預覽<span class="wf-card-tag">Stats&Preview</span></div>
+        <div class="wf-kpi-grid">
+          <div class="wf-kpi"><div class="kpi-label">圖片總數</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">保留</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">重複</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">去重率</div><div class="kpi-value">0.0%</div></div>
+        </div>
+        <div class="wf-stats-row" style="margin-top:16px">
+          <div class="wf-preview">[ 即時預覽框 ]</div>
+          <div class="wf-log"><span class="ts">[00:00]</span> 等待開始…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 4: 📚 批次處理（多影片，雙進度條）
+       ============================================================ -->
+  <section class="wf-screen" id="s-batch">
+    <div class="wf-content">
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">①</span>輸入來源（多部影片）<span class="wf-card-tag">Input</span></div>
+        <div class="wf-dropzone"><div class="big">⬆</div>拖曳多部影片 / 點擊選擇</div>
+        <div class="wf-or">— 或 —</div>
+        <div class="wf-row"><input class="wf-input" placeholder='["/data/v1.mp4","/data/影片2.mp4"]' style="flex:1"><button class="wf-btn">瀏覽…</button></div>
+        <div class="wf-label" style="margin-top:8px">已選影片（3）</div>
+        <div class="wf-crop-list" style="min-height:0">
+          <div class="item"><span class="thumb"></span><span class="name" style="flex:1;max-width:none">這是一段超長的中文影片檔名範例_第一部.mp4</span><button class="wf-btn ghost" style="min-height:28px;padding:2px 8px">✕</button></div>
+          <div class="item"><span class="thumb"></span><span class="name" style="flex:1;max-width:none">影片2.mp4</span><button class="wf-btn ghost" style="min-height:28px;padding:2px 8px">✕</button></div>
+          <div class="item"><span class="thumb"></span><span class="name" style="flex:1;max-width:none">v3_final.mov</span><button class="wf-btn ghost" style="min-height:28px;padding:2px 8px">✕</button></div>
+        </div>
+        <div class="wf-anno">已選清單以列表呈現（樣式與批次裁剪 tab 一致）：每列縮圖位 + 長中文檔名 ellipsis + 移除鈕(✕)；空清單時整塊隱藏，僅顯示 dropzone。</div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">②</span>模式 + 去重演算法<span class="wf-card-tag">Mode+Dedup</span></div>
+        <div class="wf-row" style="margin-bottom:8px">
+          <label class="wf-label" style="margin:0">批次模式</label>
+          <select class="wf-select" style="width:200px"><option>提取＋去重（dedup）</option></select>
+          <span class="wf-anno inline">mode = dedup / extract。選 extract 時隱藏演算法面板。</span>
+        </div>
+        <div class="wf-row">
+          <label class="wf-label" style="margin:0">預設等級</label>
+          <select class="wf-select" style="width:180px"><option>標準（預設）</option></select>
+        </div>
+        <details class="wf-advanced">
+          <summary>進階設定（預設摺疊）</summary>
+          <div class="adv-body">
+            <div class="wf-algo-row"><span class="wf-checkbox checked">啟用 dHash</span><span class="hint">整數 0–64</span><input class="wf-input num" value="5"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox checked">啟用 pHash</span><span class="hint">整數 0–64</span><input class="wf-input num" value="5"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 直方圖</span><span class="hint">0–1</span><input class="wf-input num" value="0.95"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 SSIM</span><span class="hint">0–1</span><input class="wf-input num" value="0.92"></div>
+            <div class="wf-algo-row"><span class="wf-checkbox">啟用 CLIP</span><span class="hint">0–1</span><input class="wf-input num" value="0.95"></div>
+            <div class="wf-row" style="margin-top:8px">
+              <label class="wf-label" style="margin:0">Hash 大小</label><input class="wf-input num" value="8">
+              <label class="wf-label" style="margin:0">時間視窗</label><input class="wf-input num" value="0">
+              <label class="wf-label" style="margin:0">CLIP 裝置</label><select class="wf-select" style="width:150px"><option>自動偵測（預設）</option><option>GPU (CUDA)</option><option>CPU</option></select>
+              <button class="wf-btn">偵測 GPU</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">③</span>輸出參數<span class="wf-card-tag">Params</span></div>
+        <div class="wf-row"><label class="wf-label" style="margin:0">JPG 品質（1–100）</label><input class="wf-input num" value="100"></div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">④</span>操作<span class="wf-card-tag">Actions</span></div>
+        <div class="wf-opbar">
+          <button class="wf-btn primary">▶ 開始批次</button>
+          <button class="wf-btn danger" disabled>■ 中止</button>
+          <button class="wf-btn ghost" disabled>⬇ 下載 ZIP</button>
+          <button class="wf-btn ghost" disabled>📄 檢視結果檔</button>
+        </div>
+      </div>
+
+      <!-- ⑤ 雙進度條 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑤</span>進度（雙進度條）<span class="wf-card-tag">Progress×2</span></div>
+        <div class="wf-progress-label"><span>整體：影片 0 / 0</span><span>0%</span></div>
+        <div class="wf-progress" style="margin-bottom:12px"><div class="fill" style="width:0%"></div></div>
+        <div class="wf-progress-label"><span>子任務（目前影片）：幀 0 / 0</span><span>0%</span></div>
+        <div class="wf-progress"><div class="fill" style="width:0%"></div></div>
+        <div class="wf-anno">上＝整體進度（progress 事件）；下＝目前影片子進度（sub_progress 事件）。兩條皆 aria-live。</div>
+      </div>
+
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑥</span>統計與預覽<span class="wf-card-tag">Stats&Preview</span></div>
+        <div class="wf-kpi-grid">
+          <div class="wf-kpi"><div class="kpi-label">已處理影片</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">保留總計</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">重複總計</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">—</div><div class="kpi-value empty">—</div></div>
+        </div>
+        <div class="wf-stats-row" style="margin-top:16px">
+          <div class="wf-preview">[ 即時預覽框（目前影片幀）]</div>
+          <div class="wf-log"><span class="ts">[00:00]</span> 等待開始…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 5: ✂ 批次裁剪（Canvas 互動）
+       ============================================================ -->
+  <section class="wf-screen" id="s-crop">
+    <div class="wf-content">
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">①</span>輸入來源（多張圖片）<span class="wf-card-tag">Input</span></div>
+        <div class="wf-dropzone"><div class="big">⬆</div>拖曳多張圖片 / 點擊選擇</div>
+        <div class="wf-or">— 或 —</div>
+        <div class="wf-row"><input class="wf-input" placeholder="/data/截圖/" style="flex:1"><button class="wf-btn">瀏覽…</button></div>
+      </div>
+
+      <!-- 左清單 + 右 Canvas -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">②</span>裁剪框設定（套用到所有圖片）<span class="wf-card-tag">CropSelector</span></div>
+        <div class="wf-crop-layout">
+          <!-- 左：圖片清單 -->
+          <div class="wf-crop-list">
+            <div class="item"><span class="thumb"></span><span class="name">這是一個超長的中文檔名範例_001.png</span></div>
+            <div class="item"><span class="thumb"></span><span class="name">截圖_2026_第2張.jpg</span></div>
+            <div class="item"><span class="thumb"></span><span class="name">photo_003.jpg</span></div>
+            <div class="item"><span class="thumb"></span><span class="name">photo_004.jpg</span></div>
+            <div class="wf-anno">清單第一張載入到右側 Canvas；長檔名 ellipsis。</div>
+          </div>
+
+          <!-- 右：Canvas -->
+          <div>
+            <div class="wf-canvas">
+              <div class="mask"></div>
+              <div class="wf-crop-rect">
+                <div class="dim-label">裁剪尺寸：1280 × 720 (原圖像素)</div>
+                <span class="wf-handle tl"></span><span class="wf-handle t"></span><span class="wf-handle tr"></span>
+                <span class="wf-handle l"></span><span class="wf-handle r"></span>
+                <span class="wf-handle bl"></span><span class="wf-handle b"></span><span class="wf-handle br"></span>
+              </div>
+            </div>
+            <div class="wf-anno">Canvas：整圖蒙暗化遮罩，裁剪區清晰。空白拖曳=畫新框；框內拖曳=平移；8 控制點(tl,t,tr,l,r,bl,b,br)=縮放。座標換算回原圖像素。鍵盤：方向鍵微調框、Shift+方向鍵縮放。</div>
+
+            <!-- 四數字框 -->
+            <div class="wf-crop-coords" style="margin-top:12px">
+              <div class="cell"><label>左 left</label><input class="wf-input num" type="number" min="0" max="2560" value="120"><span class="wf-num-hint">0 – w</span></div>
+              <div class="cell"><label>上 top</label><input class="wf-input num" type="number" min="0" max="1440" value="80"><span class="wf-num-hint">0 – h</span></div>
+              <div class="cell"><label>右 right</label><input class="wf-input num" type="number" min="0" max="2560" value="1400"><span class="wf-num-hint">0 – w</span></div>
+              <div class="cell"><label>下 bottom</label><input class="wf-input num" type="number" min="0" max="1440" value="800"><span class="wf-num-hint">0 – h</span></div>
+            </div>
+            <div class="wf-anno">四框 min/max 隨載入圖片動態更新：left/right 範圍 0–w、top/bottom 範圍 0–h（此處 w=2560、h=1440 為示意值）。</div>
+            <div class="wf-row" style="margin-top:8px">
+              <button class="wf-btn">重設為整張</button>
+              <span class="wf-pill">裁剪尺寸：1280 × 720</span>
+            </div>
+            <div class="wf-anno">四數字框 ⇄ Canvas 雙向同步（防迴圈）。無效時顯示「裁剪尺寸：無效（右須大於左、下須大於上）」。</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ③ 輸出設定 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">③</span>輸出設定<span class="wf-card-tag">Output</span></div>
+        <div class="wf-row" style="margin-bottom:8px">
+          <label class="wf-label" style="margin:0">輸出格式</label>
+          <select class="wf-select" style="width:120px"><option>JPG</option></select>
+          <label class="wf-label" style="margin:0">JPG 品質（1–100）</label>
+          <input class="wf-input num" value="95">
+          <span class="wf-anno inline">選 PNG 時，JPG 品質欄位停用(disabled)。</span>
+        </div>
+        <div class="wf-row">
+          <span class="wf-checkbox">統一輸出尺寸</span>
+          <input class="wf-input num" value="" placeholder="w" disabled> × <input class="wf-input num" value="" placeholder="h" disabled>
+          <span class="wf-anno inline">未勾選＝跟隨裁剪框尺寸；勾選才啟用 w×h 兩欄。</span>
+        </div>
+      </div>
+
+      <!-- ④ 操作列 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">④</span>操作<span class="wf-card-tag">Actions</span></div>
+        <div class="wf-opbar">
+          <button class="wf-btn primary">▶ 開始裁剪</button>
+          <button class="wf-btn danger" disabled>■ 中止</button>
+          <button class="wf-btn ghost" disabled>⬇ 下載 ZIP</button>
+          <button class="wf-btn ghost" disabled>📄 檢視結果檔</button>
+        </div>
+      </div>
+
+      <!-- ⑤ 進度 -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑤</span>進度<span class="wf-card-tag">Progress</span></div>
+        <div class="wf-progress-label"><span>圖片 0 / 0</span><span>0%</span></div>
+        <div class="wf-progress"><div class="fill" style="width:0%"></div></div>
+      </div>
+
+      <!-- ⑥ Stats -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">⑥</span>統計與預覽<span class="wf-card-tag">Stats&Preview</span></div>
+        <div class="wf-kpi-grid">
+          <div class="wf-kpi"><div class="kpi-label">圖片總數</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">已裁剪</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">失敗／略過</div><div class="kpi-value">0</div></div>
+          <div class="wf-kpi"><div class="kpi-label">—</div><div class="kpi-value empty">—</div></div>
+        </div>
+        <div class="wf-stats-row" style="margin-top:16px">
+          <div class="wf-preview">[ 即時預覽框（裁剪後）]</div>
+          <div class="wf-log"><span class="ts">[00:00]</span> 等待開始…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 6: 狀態 (States) — 以提取+去重為例並排
+       ============================================================ -->
+  <section class="wf-screen" id="s-states">
+    <div class="wf-content">
+      <h2 class="wf-screen-head">狀態(States)總覽 — 以「🎬 提取+去重」為例，所有狀態並排</h2>
+      <div class="wf-states-grid">
+
+        <!-- 空狀態 -->
+        <div class="wf-state-card">
+          <h4>① 預設 / 空狀態</h4>
+          <div class="wf-empty"><span class="big">🎬</span>尚未選擇影片<br>請上傳或從伺服器選取</div>
+          <div class="wf-anno">空狀態文案要明確指引下一步；KPI 全 0、按鈕除「開始」外 disabled。</div>
+        </div>
+
+        <!-- 上傳中 loading -->
+        <div class="wf-state-card">
+          <h4>② 上傳中 (loading)</h4>
+          <div class="wf-loading"><span class="ring"></span><br>上傳中… 64%（影片2.mp4，128MB）</div>
+          <div class="wf-progress" style="margin-top:8px"><div class="fill" style="width:64%"></div></div>
+          <div class="wf-anno">大檔上傳顯示進度；此時禁用「開始」，aria-busy=true。</div>
+        </div>
+
+        <!-- 處理中 -->
+        <div class="wf-state-card">
+          <h4>③ 處理中（進度+預覽+日誌滾動）</h4>
+          <div class="wf-progress-label"><span>幀 4,210 / 9,000</span><span>47%</span></div>
+          <div class="wf-progress"><div class="fill" style="width:47%"></div></div>
+          <div class="wf-kpi-grid" style="margin-top:8px">
+            <div class="wf-kpi"><div class="kpi-label">總幀數</div><div class="kpi-value">4,210</div></div>
+            <div class="wf-kpi"><div class="kpi-label">保留</div><div class="kpi-value">312</div></div>
+            <div class="wf-kpi"><div class="kpi-label">重複</div><div class="kpi-value">3,898</div></div>
+            <div class="wf-kpi"><div class="kpi-label">去重率</div><div class="kpi-value">92.6%</div></div>
+          </div>
+          <div class="wf-preview" style="min-height:120px;margin-top:8px">[ 即時預覽：目前幀 ]</div>
+          <div class="wf-log" style="min-height:90px;margin-top:8px"><span class="ts">[00:42]</span> 保留 frame_00004210.jpg
+<span class="ts">[00:42]</span> 重複 ×128（dHash≤5）
+<span class="ts">[00:43]</span> 處理中…</div>
+          <div class="wf-anno">「中止」啟用；日誌 aria-live=polite 自動捲底；狀態 pill＝「處理中」。</div>
+        </div>
+
+        <!-- 完成摘要對話框 -->
+        <div class="wf-state-card" style="grid-column: span 2">
+          <h4>④ 完成摘要對話框（含執行時間）</h4>
+          <div class="wf-dialog-backdrop">
+            <div class="wf-dialog" role="dialog" aria-modal="true" aria-label="處理完成摘要">
+              <h3>✓ 處理完成</h3>
+              <div class="summary-row"><span>執行時間</span><span>2 分 14 秒</span></div>
+              <div class="summary-row"><span>總幀數</span><span>9,000</span></div>
+              <div class="summary-row"><span>保留</span><span>648</span></div>
+              <div class="summary-row"><span>重複</span><span>8,352</span></div>
+              <div class="summary-row"><span>去重率</span><span>92.8%</span></div>
+              <div class="summary-row"><span>輸出位置</span><span>/data/jobs/ab12…/output</span></div>
+              <div class="wf-opbar" style="margin-top:16px">
+                <button class="wf-btn primary">⬇ 下載 ZIP</button>
+                <button class="wf-btn ghost">📄 檢視結果檔</button>
+                <button class="wf-btn">關閉</button>
+              </div>
+            </div>
+          </div>
+          <div class="wf-anno">放大對話框置中；初始 focus 落在「下載 ZIP」；Esc 關閉；焦點鎖在對話框內(focus trap)。狀態 pill＝「完成」。</div>
+        </div>
+
+        <!-- 錯誤 -->
+        <div class="wf-state-card">
+          <h4>⑤ 錯誤提示</h4>
+          <div class="wf-banner error">無法開啟影片：不支援的編碼或檔案損毀。請改用其他影片或檢查 /data 路徑。</div>
+          <div class="wf-opbar" style="margin-top:8px"><button class="wf-btn">重試</button><button class="wf-btn ghost">檢視日誌</button></div>
+          <div class="wf-anno">錯誤 role=alert（aria-live=assertive）；保留已輸出檔；狀態 pill＝「錯誤」。CLIP 未安裝等錯誤亦在此呈現。</div>
+        </div>
+
+        <!-- 中止 -->
+        <div class="wf-state-card">
+          <h4>⑥ 中止</h4>
+          <div class="wf-banner abort">使用者已中止。已處理部分結果照常保留並可下載。</div>
+          <div class="wf-opbar" style="margin-top:8px"><button class="wf-btn primary">⬇ 下載 ZIP（部分）</button><button class="wf-btn">重新開始</button></div>
+          <div class="wf-anno">中止後 status=cancelled；仍回傳 done 事件（cancelled=true）；狀態 pill＝「已中止」。</div>
+        </div>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 7: 行動裝置 (<=640px) 重排示意
+       ============================================================ -->
+  <section class="wf-screen" id="s-mobile">
+    <div class="wf-content">
+      <h2 class="wf-screen-head">行動裝置（≤640px）重排示意</h2>
+      <div class="wf-anno">原則：多欄 → 單欄堆疊；KPI 4 欄 → 2×2；Tab 列改水平捲動；Canvas 與清單上下堆疊；輸入/按鈕滿版且 ≥44px。</div>
+
+      <div class="wf-phone">
+        <!-- mini header -->
+        <div class="wf-header" style="padding:8px">
+          <div><div class="brand-title" style="font-size:16px">FrameExtractor</div></div>
+          <button class="wf-theme-btn" style="width:36px;height:36px">◐</button>
+        </div>
+        <!-- scrollable tabs -->
+        <div class="wf-tabbar" style="border-bottom-width:1px">
+          <button class="wf-tab" aria-selected="true">🎬 提取+去重</button>
+          <button class="wf-tab" aria-selected="false">📸 只提取</button>
+          <button class="wf-tab" aria-selected="false">🗂 去重</button>
+        </div>
+        <div class="wf-anno" style="margin:8px 4px">↑ Tab 水平捲動（不換行）</div>
+
+        <!-- stacked content -->
+        <div style="padding:8px;display:flex;flex-direction:column;gap:8px">
+          <div class="wf-card" style="padding:8px">
+            <div class="wf-card-title">① 輸入</div>
+            <div class="wf-dropzone" style="padding:16px 8px"><div class="big">⬆</div>上傳影片</div>
+          </div>
+          <div class="wf-card" style="padding:8px">
+            <div class="wf-card-title">② 演算法</div>
+            <select class="wf-select"><option>標準（預設）</option></select>
+            <details class="wf-advanced"><summary>進階設定</summary></details>
+          </div>
+          <div class="wf-card" style="padding:8px">
+            <div class="wf-card-title">④ 操作</div>
+            <button class="wf-btn primary" style="width:100%;margin-bottom:8px">▶ 開始</button>
+            <button class="wf-btn danger" style="width:100%" disabled>■ 中止</button>
+          </div>
+          <div class="wf-card" style="padding:8px">
+            <div class="wf-card-title">⑥ KPI（2×2）</div>
+            <div class="wf-kpi-grid" style="grid-template-columns:1fr 1fr">
+              <div class="wf-kpi"><div class="kpi-label">總幀數</div><div class="kpi-value">0</div></div>
+              <div class="wf-kpi"><div class="kpi-label">保留</div><div class="kpi-value">0</div></div>
+              <div class="wf-kpi"><div class="kpi-label">重複</div><div class="kpi-value">0</div></div>
+              <div class="wf-kpi"><div class="kpi-label">去重率</div><div class="kpi-value">0%</div></div>
+            </div>
+            <div class="wf-preview" style="min-height:100px;margin-top:8px">預覽</div>
+            <div class="wf-log" style="min-height:80px;margin-top:8px">日誌（單欄置於預覽下方）</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       SCREEN 8: 關於 + 共用對話框（About / 伺服器資料夾選擇器）
+       ============================================================ -->
+  <section class="wf-screen" id="s-about">
+    <div class="wf-content">
+      <h2 class="wf-screen-head">關於對話框 + 共用的伺服器資料夾選擇器</h2>
+
+      <!-- About dialog -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">A</span>關於(About) 對話框<span class="wf-card-tag">About</span></div>
+        <div class="wf-dialog-backdrop">
+          <div class="wf-dialog" role="dialog" aria-modal="true" aria-label="關於 FrameExtractor">
+            <h3>ℹ 關於 FrameExtractor</h3>
+            <div class="about-row"><span class="k">版本</span><span class="v">v2.0 · 影片提取 · 智慧去重 · 批次處理 · 批次裁剪</span></div>
+            <div class="about-row"><span class="k">作者</span><span class="v">airesearch3412-hub</span></div>
+            <div class="about-row"><span class="k">原始碼</span><span class="v"><u>github.com/airesearch3412-hub/FrameExtractor</u>（連結）</span></div>
+            <div class="about-row"><span class="k">授權</span><span class="v">PolyForm Noncommercial License 1.0.0</span></div>
+            <div class="about-row"><span class="k">核心套件</span><span class="v">OpenCV · imagehash · open-clip · FastAPI</span></div>
+            <div class="wf-opbar" style="margin-top:16px">
+              <button class="wf-btn primary">關閉</button>
+            </div>
+          </div>
+        </div>
+        <div class="wf-anno">由 footer「關於」連結或 Header 開啟；role=dialog/aria-modal=true，初始 focus 落在「關閉」，Esc 關閉，焦點鎖在對話框內(focus trap)。內容對齊 web_spec.md §7。</div>
+      </div>
+
+      <!-- Server browse selector -->
+      <div class="wf-card">
+        <div class="wf-card-title"><span class="wf-zone-num">B</span>伺服器資料夾選擇器<span class="wf-card-tag">/api/browse</span></div>
+        <div class="wf-dialog-backdrop">
+          <div class="wf-browse" role="dialog" aria-modal="true" aria-label="選擇伺服器資料夾">
+            <h3>🗂 選擇伺服器資料夾 / 檔案</h3>
+            <div class="wf-browse-bar">
+              <button class="wf-btn" aria-label="上層資料夾">↑ 上層</button>
+              <span class="cwd" title="/data/影片/2026">/data/影片/2026</span>
+            </div>
+            <div class="wf-browse-cols">
+              <div class="wf-browse-col">
+                <div class="col-head">資料夾 dirs</div>
+                <div class="row sel">📁 第一季</div>
+                <div class="row">📁 第二季_超長中文資料夾名稱範例</div>
+                <div class="row">📁 raw</div>
+              </div>
+              <div class="wf-browse-col">
+                <div class="col-head">檔案 files</div>
+                <div class="row">🎞 影片01.mp4</div>
+                <div class="row">🎞 這是超長中文影片檔名_範例_002.mov</div>
+                <div class="row">🎞 clip_003.mkv</div>
+              </div>
+            </div>
+            <div class="wf-opbar" style="margin-top:16px">
+              <button class="wf-btn primary">選取</button>
+              <button class="wf-btn ghost">取消</button>
+            </div>
+          </div>
+        </div>
+        <div class="wf-anno">各 tab「瀏覽…」按鈕開啟此選擇器；cwd 路徑列 + ↑上層 + dirs/files 兩欄清單 + 選取/取消。後端限制在掛載根目錄內、防目錄穿越(reject ../)；長中文名 ellipsis；鍵盤 ↑/↓ 移動、Enter 進入/選取、Esc 取消。</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FOOTER STATUS BAR (shared) -->
+  <footer class="wf-footer">
+    <span>就緒 · 等待操作</span>
+    <span><a href="#" data-goto="s-about" style="color:inherit">關於</a> · 說明 · 作者 airesearch3412-hub · PolyForm Noncommercial 1.0.0</span>
+  </footer>
+
+</div><!-- /wf-shell -->
+
+<script>
+// 純前端畫面切換：切 switcher → 顯示對應 section + 同步 tab 高亮
+(function () {
+  var buttons = document.querySelectorAll('.wf-switcher button');
+  var screens = document.querySelectorAll('.wf-screen');
+  var tabs = document.querySelectorAll('.wf-tabbar .wf-tab');
+  // map screen id -> tab index (states/mobile keep current tab)
+  var tabMap = {
+    's-extract-dedup': 0, 's-extract-only': 1, 's-folder-dedup': 2,
+    's-batch': 3, 's-crop': 4
+  };
+  function show(id) {
+    screens.forEach(function (s) { s.classList.toggle('active', s.id === id); });
+    buttons.forEach(function (b) { b.classList.toggle('active', b.dataset.screen === id); });
+    if (id in tabMap) {
+      tabs.forEach(function (t, i) { t.setAttribute('aria-selected', i === tabMap[id] ? 'true' : 'false'); });
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  buttons.forEach(function (b) { b.addEventListener('click', function () { show(b.dataset.screen); }); });
+  // tab bar also switches (mirrors)
+  tabs.forEach(function (t, i) {
+    t.addEventListener('click', function () {
+      var ids = ['s-extract-dedup', 's-extract-only', 's-folder-dedup', 's-batch', 's-crop'];
+      show(ids[i]);
+    });
+  });
+  // footer / inline links that jump to a screen
+  document.querySelectorAll('[data-goto]').forEach(function (el) {
+    el.addEventListener('click', function (e) { e.preventDefault(); show(el.dataset.goto); });
+  });
+  // advanced panel + checkbox toggles are interactive for demo
+  document.querySelectorAll('.wf-checkbox').forEach(function (c) {
+    c.addEventListener('click', function () { c.classList.toggle('checked'); });
+  });
+})();
+</script>
+
+</body>
+</html>

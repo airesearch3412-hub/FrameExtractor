@@ -28,3 +28,7 @@ summary.txt
 # IDE
 .vscode/
 .idea/
+
+# Web 網站版執行期資料
+web/data/
+web/__pycache__/

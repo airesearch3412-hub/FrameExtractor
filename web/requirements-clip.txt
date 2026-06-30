@@ -1,0 +1,4 @@
+# 選用：ultra（CLIP 語意去重）等級才需要。
+# 安裝：pip install -r web/requirements-clip.txt
+torch>=2.0.0
+open-clip-torch>=2.20.0

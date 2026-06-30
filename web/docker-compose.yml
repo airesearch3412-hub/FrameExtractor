@@ -1,0 +1,23 @@
+# FrameExtractor 網站版 — docker compose
+# 用法（在 web/ 目錄下執行）：
+#   docker compose up --build
+#   啟用 CLIP/ultra：把 INSTALL_CLIP 改成 "1" 後 docker compose up --build
+services:
+  frameextractor-web:
+    build:
+      # context = repo 根目錄（上一層），才能 COPY 根目錄的 deduper.py
+      context: ..
+      dockerfile: web/Dockerfile
+      args:
+        INSTALL_CLIP: "0"   # 設 "1" 啟用 CLIP/ultra（torch + open-clip）
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data            # 上傳/結果/可被「伺服器資料夾」瀏覽
+      - clip-cache:/root/.cache # CLIP 權重快取（避免每次重新下載）
+    environment:
+      FE_DATA_DIR: /data
+    restart: unless-stopped
+
+volumes:
+  clip-cache:
