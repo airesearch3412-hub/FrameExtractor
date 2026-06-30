@@ -974,13 +974,16 @@ class TabBatch(QWidget):
 
 # ===================== 互動式框選裁剪預覽 =====================
 class CropSelector(QWidget):
-    """在等比例縮放的預覽圖上，用滑鼠「框選 / 拖曳 / 縮放」裁剪區域。
-    對外座標一律換算回「原圖像素」(left, top, right, bottom)。"""
+    """在預覽圖上用滑鼠「框選 / 拖曳 / 縮放」裁剪區域，並支援畫面放大縮小與平移。
+    裁剪框一律以「原圖像素」(left, top, right, bottom) 對外。
+    視圖轉換：widget = origin + img * scale；scale 為每個原圖像素佔的螢幕像素。"""
 
     cropChanged = pyqtSignal(int, int, int, int)   # left, top, right, bottom（原圖座標）
+    zoomChanged = pyqtSignal(float)                # 目前縮放比例（scale，1.0=原圖實際像素）
 
     TOL = 10            # 控制點命中容差（widget px）
     HANDLE = 8          # 控制點繪製邊長（widget px）
+    MAX_SCALE = 16.0    # 最大放大（每原圖像素 16 螢幕像素）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -988,29 +991,34 @@ class CropSelector(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMouseTracking(True)
         self._pix = None            # 原圖 QPixmap（全解析度）
-        self._scaled = None         # 快取的縮放後 QPixmap
-        self._scaled_for = None     # 快取對應尺寸 (tw, th)
         self._img_w = 0
         self._img_h = 0
         self._crop = None           # QRect（原圖座標，x/y/width/height）
-        self._mode = None           # None / 'new' / 'move' / 'resize'
+        # 視圖狀態
+        self._scale = None          # 每原圖像素的螢幕像素；None=尚未計算
+        self._origin = None         # 影像 (0,0) 在 widget 的座標（QPointF）
+        self._fitted = True         # 目前是否處於「適應視窗」（resize 時保持貼合）
+        # 互動狀態
+        self._mode = None           # None / 'new' / 'move' / 'resize' / 'pan'
         self._handle = None
         self._press_img = None      # 按下時原圖座標 (ix, iy)
         self._press_crop = None     # 按下時的裁剪框（QRect）
+        self._pan_start = None      # 平移起點（widget QPointF）
+        self._origin_start = None   # 平移起點時的 origin
 
     # ---------- 載入 / 取值 ----------
     def set_image(self, qimg: QImage):
         if qimg is None or qimg.isNull():
             self._pix = None; self._img_w = self._img_h = 0
-            self._crop = None; self._scaled = None
+            self._crop = None; self._scale = None; self._origin = None
             self.update(); return
         self._pix = QPixmap.fromImage(qimg)
         self._img_w, self._img_h = qimg.width(), qimg.height()
-        self._scaled = None
         if self._crop is None:
             self._crop = QRect(0, 0, self._img_w, self._img_h)
         else:
             self._crop = self._clamp_rect(self._crop)
+        self._fit()                 # 換新圖時重設視圖為適應視窗
         self.update()
         self._emit()
 
@@ -1039,15 +1047,82 @@ class CropSelector(QWidget):
             self._crop = QRect(0, 0, self._img_w, self._img_h)
             self.update(); self._emit()
 
+    # ---------- 縮放 / 平移 ----------
+    def _fit_scale(self):
+        if not self._img_w or not self._img_h:
+            return 1.0
+        return min(self.width() / self._img_w, self.height() / self._img_h)
+
+    def _fit(self):
+        """重設視圖：整張影像置中貼合視窗。"""
+        if not self._img_w or not self._img_h:
+            self._scale = None; self._origin = None; return
+        s = self._fit_scale() or 1.0
+        self._scale = s
+        self._origin = QPointF((self.width() - self._img_w * s) / 2.0,
+                               (self.height() - self._img_h * s) / 2.0)
+        self._fitted = True
+        self.zoomChanged.emit(self._scale)
+
+    def _ensure_view(self):
+        if self._pix is not None and (self._scale is None or self._origin is None):
+            self._fit()
+
+    def _clamp_view(self):
+        """夾住平移：影像比視窗大時不留空白邊；比視窗小時置中。"""
+        if self._scale is None:
+            return
+        W, H = self.width(), self.height()
+        dw = self._img_w * self._scale; dh = self._img_h * self._scale
+        ox, oy = self._origin.x(), self._origin.y()
+        ox = (W - dw) / 2.0 if dw <= W else min(0.0, max(W - dw, ox))
+        oy = (H - dh) / 2.0 if dh <= H else min(0.0, max(H - dh, oy))
+        self._origin = QPointF(ox, oy)
+
+    def _zoom_to(self, new_scale, focal):
+        """以 focal（widget 座標）為定點縮放到 new_scale。"""
+        self._ensure_view()
+        if self._scale is None:
+            return
+        lo = self._fit_scale(); hi = max(lo, self.MAX_SCALE)
+        new_scale = max(lo, min(hi, new_scale))
+        # 保持 focal 底下的影像點不動
+        img_x = (focal.x() - self._origin.x()) / self._scale
+        img_y = (focal.y() - self._origin.y()) / self._scale
+        self._scale = new_scale
+        self._origin = QPointF(focal.x() - img_x * new_scale,
+                               focal.y() - img_y * new_scale)
+        self._fitted = abs(new_scale - lo) < 1e-9
+        self._clamp_view()
+        self.update()
+        self.zoomChanged.emit(self._scale)
+
+    def _center(self):
+        return QPointF(self.width() / 2.0, self.height() / 2.0)
+
+    def _cur_scale(self):
+        self._ensure_view()
+        return self._scale or 1.0
+
+    def zoom_in(self):
+        self._zoom_to(self._cur_scale() * 1.25, self._center())
+
+    def zoom_out(self):
+        self._zoom_to(self._cur_scale() * 0.8, self._center())
+
+    def fit_view(self):
+        if self._pix:
+            self._fit(); self.update()
+
+    def one_to_one(self):
+        self._zoom_to(1.0, self._center())
+
     # ---------- 座標換算 ----------
     def _geom(self):
-        if not self._img_w or not self._img_h:
+        self._ensure_view()
+        if self._scale is None or self._origin is None:
             return 1.0, 0.0, 0.0
-        s = min(self.width() / self._img_w, self.height() / self._img_h)
-        # 取整數原點，讓底圖、變暗層、清晰裁剪區三者像素對齊（避免 1px 接縫）
-        ox = round((self.width() - self._img_w * s) / 2.0)
-        oy = round((self.height() - self._img_h * s) / 2.0)
-        return s, ox, oy
+        return self._scale, self._origin.x(), self._origin.y()
 
     def _widget_to_img(self, wx, wy):
         s, ox, oy = self._geom()
@@ -1056,6 +1131,10 @@ class CropSelector(QWidget):
         ix = max(0, min(self._img_w, (wx - ox) / s))
         iy = max(0, min(self._img_h, (wy - oy) / s))
         return int(round(ix)), int(round(iy))
+
+    def _img_widget_rectf(self):
+        s, ox, oy = self._geom()
+        return QRectF(ox, oy, self._img_w * s, self._img_h * s)
 
     def _crop_widget_rectf(self):
         s, ox, oy = self._geom()
@@ -1098,14 +1177,18 @@ class CropSelector(QWidget):
         return QRect(x, y, w, h)
 
     # ---------- 繪製 ----------
-    def _scaled_pixmap(self, s):
-        tw = max(1, round(self._img_w * s)); th = max(1, round(self._img_h * s))
-        if self._scaled is None or self._scaled_for != (tw, th):
-            self._scaled = self._pix.scaled(
-                tw, th, Qt.AspectRatioMode.IgnoreAspectRatio,
-                Qt.TransformationMode.SmoothTransformation)
-            self._scaled_for = (tw, th)
-        return self._scaled
+    def _blit(self, p, widget_rect):
+        """把 widget_rect 對應的影像區域，從全解析度原圖直接縮放畫上去
+        （只畫可見部分，放大時也不會配置巨大點陣圖）。"""
+        s, ox, oy = self._geom()
+        if s <= 0:
+            return
+        sx0 = (widget_rect.left() - ox) / s
+        sy0 = (widget_rect.top() - oy) / s
+        sx1 = (widget_rect.right() - ox) / s
+        sy1 = (widget_rect.bottom() - oy) / s
+        src = QRectF(sx0, sy0, sx1 - sx0, sy1 - sy0)
+        p.drawPixmap(widget_rect, self._pix, src)
 
     def paintEvent(self, _e):
         p = QPainter(self)
@@ -1116,22 +1199,20 @@ class CropSelector(QWidget):
                        "請先載入預覽圖\n（在左側清單點一張圖片）")
             return
 
-        s, ox, oy = self._geom()
-        disp = self._scaled_pixmap(s)
-        p.drawPixmap(int(round(ox)), int(round(oy)), disp)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        # 只畫「影像 ∩ 視窗」的可見區域
+        vis = self._img_widget_rectf().intersected(QRectF(self.rect()))
+        if vis.isEmpty():
+            return
+        self._blit(p, vis)
 
         if self._crop:
-            iw, ih = disp.width(), disp.height()
-            # 整張影像區域變暗
-            p.fillRect(QRectF(ox, oy, iw, ih), QColor(0, 0, 0, 120))
-            # 裁剪區域還原成清晰（把該區塊原圖再畫一次）
-            r = self._crop
-            src = QRectF(r.x() * s, r.y() * s, r.width() * s, r.height() * s)
-            tgt = QRectF(ox + src.x(), oy + src.y(), src.width(), src.height())
-            p.drawPixmap(tgt, disp, src)
+            p.fillRect(vis, QColor(0, 0, 0, 120))            # 可見影像整體變暗
+            cvis = self._crop_widget_rectf().intersected(vis)
+            if not cvis.isEmpty():
+                self._blit(p, cvis)                          # 裁剪區域還原清晰
 
             cr = self._crop_widget_rectf()
-            # 邊框
             pen = QPen(QColor("#1f6feb")); pen.setWidth(2)
             p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
             p.drawRect(cr)
@@ -1141,17 +1222,32 @@ class CropSelector(QWidget):
             hs = self.HANDLE
             for hx, hy in self._handle_points().values():
                 p.drawRect(QRectF(hx - hs / 2, hy - hs / 2, hs, hs))
-            # 尺寸標籤
+            # 尺寸標籤（貼在裁剪框左上角內側，縮放平移後仍跟著走）
+            r = self._crop
             label = f"{r.width()} × {r.height()}"
-            p.setPen(QColor("#ffffff"))
-            tx, ty = cr.left() + 4, max(cr.top() - 6, oy + 12)
+            tx, ty = cr.left() + 4, cr.top() + 16
             p.fillRect(QRectF(tx - 3, ty - 14, 9 + 8 * len(label), 18),
                        QColor(0, 0, 0, 150))
+            p.setPen(QColor("#ffffff"))
             p.drawText(QPointF(tx, ty), label)
 
     def resizeEvent(self, e):
-        self._scaled = None
+        if self._pix is not None:
+            if self._fitted:
+                self._fit()        # 貼合狀態下跟著視窗重新貼合
+            else:
+                self._clamp_view()  # 已縮放則保持比例、僅重新夾住平移
         super().resizeEvent(e)
+
+    def wheelEvent(self, e):
+        if not self._pix:
+            return
+        dy = e.angleDelta().y()
+        if dy == 0:
+            return
+        self._zoom_to(self._cur_scale() * (1.25 if dy > 0 else 0.8),
+                      e.position())
+        e.accept()
 
     # ---------- 滑鼠互動 ----------
     def _emit(self):
@@ -1161,9 +1257,18 @@ class CropSelector(QWidget):
                                   r.x() + r.width(), r.y() + r.height())
 
     def mousePressEvent(self, e):
-        if not self._pix or e.button() != Qt.MouseButton.LeftButton:
+        if not self._pix:
             return
         pos = e.position().toPoint()
+        # 中鍵拖曳 = 平移畫面
+        if e.button() == Qt.MouseButton.MiddleButton:
+            self._mode = 'pan'
+            self._pan_start = e.position()
+            self._origin_start = QPointF(self._origin)
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
         self._press_img = self._widget_to_img(pos.x(), pos.y())
         self._press_crop = QRect(self._crop) if self._crop else None
         handle = self._hit_handle(pos) if self._crop else None
@@ -1179,6 +1284,14 @@ class CropSelector(QWidget):
 
     def mouseMoveEvent(self, e):
         pos = e.position().toPoint()
+        if self._mode == 'pan':
+            d = e.position() - self._pan_start
+            self._origin = QPointF(self._origin_start.x() + d.x(),
+                                   self._origin_start.y() + d.y())
+            self._fitted = False
+            self._clamp_view()
+            self.update()
+            return
         if self._mode is None:
             self._update_cursor(pos)
             return
@@ -1209,6 +1322,10 @@ class CropSelector(QWidget):
         return QRect(nx0, ny0, max(1, nx1 - nx0), max(1, ny1 - ny0))
 
     def mouseReleaseEvent(self, e):
+        if self._mode == 'pan':
+            self._mode = None
+            self.unsetCursor()
+            return
         if self._mode == 'new' and self._crop and \
                 (self._crop.width() < 2 or self._crop.height() < 2):
             # 只是輕點一下，視為無效框選 → 還原先前的裁剪框
@@ -1263,10 +1380,27 @@ class TabBatchCrop(QWidget):
         top.addWidget(lc, 1)
 
         pc, pl = make_card(12, 8)
-        pl.addWidget(section_label("裁剪預覽（可直接在圖上框選 / 拖曳 / 縮放）"))
+        pl.addWidget(section_label("裁剪預覽（圖上框選 / 拖曳 / 縮放控制點；滾輪縮放、中鍵拖曳平移）"))
         self.selector = CropSelector()
         self.selector.cropChanged.connect(self._on_crop_changed)
+        self.selector.zoomChanged.connect(self._on_zoom)
         pl.addWidget(self.selector, 1)
+
+        # 縮放工具列
+        zr = QHBoxLayout(); zr.setSpacing(6)
+        zr.addWidget(field_label("縮放"))
+        b_zout = QPushButton("－"); b_zout.setFixedWidth(34); b_zout.setToolTip("縮小")
+        b_zin = QPushButton("＋"); b_zin.setFixedWidth(34); b_zin.setToolTip("放大")
+        b_fit = QPushButton("適應視窗"); b_1x = QPushButton("1:1")
+        b_zout.clicked.connect(self.selector.zoom_out)
+        b_zin.clicked.connect(self.selector.zoom_in)
+        b_fit.clicked.connect(self.selector.fit_view)
+        b_1x.clicked.connect(self.selector.one_to_one)
+        self.lbl_zoom = QLabel("—"); self.lbl_zoom.setObjectName("fieldLabel")
+        for wdg in (b_zout, b_zin, b_fit, b_1x):
+            zr.addWidget(wdg)
+        zr.addWidget(self.lbl_zoom); zr.addStretch(1)
+        pl.addLayout(zr)
 
         grid = QGridLayout(); grid.setHorizontalSpacing(10); grid.setVerticalSpacing(6)
         self.sp_left = QSpinBox(); self.sp_top = QSpinBox()
@@ -1404,6 +1538,9 @@ class TabBatchCrop(QWidget):
                         (self.sp_right, r), (self.sp_bottom, b)):
             sp.blockSignals(True); sp.setValue(val); sp.blockSignals(False)
         self._update_size_label(l, t, r, b)
+
+    def _on_zoom(self, scale):
+        self.lbl_zoom.setText(f"{scale * 100:.0f}%")
 
     def _on_spin(self):
         l = self.sp_left.value(); t = self.sp_top.value()
