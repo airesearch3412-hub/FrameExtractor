@@ -189,6 +189,19 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 - CLIP 語意比對（`ultra` 等級）首次使用會自動下載模型權重（約 300MB）；無 GPU 時以 CPU 推論，速度較慢。
 - 中文路徑已支援（透過 `imencode + numpy.tofile` / `numpy.fromfile + imdecode` bypass OpenCV 的限制）
 
+## 開發 / AI 協作文件
+
+本專案導入了輕量治理（取自 `ai_fde_project_sop_template`，僅採 Tier 1+2）。協作時的文件地圖：
+
+| 文件 | 用途 |
+|---|---|
+| [`CLAUDE.md`](CLAUDE.md) / [`AGENTS.md`](AGENTS.md) | AI 協作工作指引：可改/禁改區、慣例、完成定義（DoD） |
+| [`project_status.md`](project_status.md) | 目前狀態、未提交變更、阻塞點、下一步 |
+| [`decision_log.md`](decision_log.md) | 架構/技術決策（`DEC-XXX`） |
+| [`dev_log.md`](dev_log.md) | 每輪任務的問題/解法/驗證 |
+| [`TASK_TEMPLATE.md`](TASK_TEMPLATE.md) | 任務卡模板（複製到 `docs/specs/task-XXX-*.md`） |
+| [`docs/specs/`](docs/specs/) | 功能規格（GWT 驗收）；範例見 `feature-batch-crop.md` |
+
 ## 授權 License
 
 本專案採用 **PolyForm Noncommercial License 1.0.0**（非商業授權）。
