@@ -1,8 +1,58 @@
 # FrameExtractor v2
 
-影片逐幀提取與智慧去重工具。**選單列 + 四分頁 + 多演算法分層去重**，提供 GUI 與命令列兩種介面，全程支援中文路徑。
+影片逐幀提取與智慧去重工具。**選單列 + 多分頁 + 多演算法分層去重**，提供 **GUI 桌面版、命令列、Docker 網站版**三種介面，全程支援中文路徑。
 
-## 安裝
+> 📍 你正在 **`website` 分支**：在桌面版之上，額外提供「功能一模一樣、可 Docker 部署」的網站版，所有程式碼位於 [`web/`](web/)。
+
+---
+
+## 🌐 網站版（Docker 部署）
+
+與桌面版**功能一模一樣**的網站版，以 **FastAPI + 原生前端 + SSE**（即時進度／預覽／日誌）打造，重用同一套去重核心 `deduper.py`。
+
+### 快速開始
+
+**Docker（推薦）**
+
+```bash
+docker compose -f web/docker-compose.yml up --build
+# 瀏覽器開 http://localhost:8000
+```
+
+- 預設映像**不含 CLIP/torch**（映像較小）。要用 `ultra` 等級：把 `web/docker-compose.yml` 的 `INSTALL_CLIP` 設為 `1` 再重新 build。
+- 主機資料夾 `./data` 會掛載到容器 `/data`，可用介面上的「瀏覽伺服器」直接處理大型影片與既有資料夾（免上傳）。
+
+**本機（不用 Docker）**
+
+```bash
+pip install -r web/requirements.txt
+uvicorn web.app:app --host 0.0.0.0 --port 8000   # 從 repo 根目錄執行
+```
+
+### 五大功能（與桌面版對等）
+
+| 功能 | 說明 |
+|---|---|
+| 🎬 提取 + 去重 | 影片逐幀提取 + 多演算法去除相似畫面 |
+| 📸 只提取 | 完整保留所有幀，可設定抽幀間隔 |
+| 🗂 僅去重資料夾 | 對既有圖片資料夾去重（移動／刪除／僅報表） |
+| 📚 批次處理 | 一次處理多個影片，各自建立子資料夾 |
+| ✂ 批次裁剪 | 互動框選裁剪框，批次套用到多張圖片並統一輸出 |
+
+四種演算法等級、完整進階設定、即時預覽 / KPI / 日誌 / 進度、所有 CSV / `summary.txt` 輸出、深淺主題、結果可打包 ZIP 下載，全部對齊桌面版；輸入支援「瀏覽器上傳」與「瀏覽伺服器掛載資料夾」兩種，全程支援中文檔名。
+
+### 延伸文件
+
+| 文件 | 內容 |
+|---|---|
+| [`web/README.md`](web/README.md) | 部署與使用詳細說明 |
+| [`web/ARCHITECTURE.md`](web/ARCHITECTURE.md) | 技術架構與前後端 / API / SSE 合約 |
+| [`web/UIUX_SPEC.md`](web/UIUX_SPEC.md) | UI/UX 設計系統（WCAG 2.1 AA） |
+| [`web/prototype/`](web/prototype/) | 高保真 UI 原型（可離線雙擊 `index.html` 預覽全部畫面與狀態） |
+
+---
+
+## 桌面版安裝（GUI / CLI）
 
 ```bash
 pip install -r requirements.txt
@@ -47,6 +97,16 @@ FrameExtractor/
 ├── deduper.py              # 多演算法去重核心（DedupConfig / Deduper）
 ├── workers.py              # 四個背景執行緒（QThread）
 ├── requirements.txt
+├── web/                    # 🌐 網站版（Docker 部署，功能與桌面版一致）
+│   ├── app.py              #   FastAPI：API + SSE + 靜態前端
+│   ├── core.py             #   無 Qt 處理核心（重用 deduper.py）
+│   ├── jobs.py             #   Job 管理 + SSE 事件
+│   ├── static/             #   前端（HTML / CSS / JS）
+│   ├── Dockerfile, docker-compose.yml, .dockerignore
+│   ├── requirements.txt    #   網站版依賴（CLIP 另見 requirements-clip.txt）
+│   ├── ARCHITECTURE.md, UIUX_SPEC.md, README.md
+│   ├── prototype/          #   高保真 UI 原型（可離線開啟）
+│   └── wireframes/         #   低保真線框圖
 ├── LICENSE                 # PolyForm Noncommercial 1.0.0
 └── README.md
 ```
