@@ -71,7 +71,14 @@ FrameExtractor/
 ├── workers.py              # 五個背景執行緒（QThread）
 ├── requirements.txt
 ├── LICENSE                 # PolyForm Noncommercial 1.0.0
-└── README.md
+├── README.md
+│   ── 開發 / AI 協作治理（SOP Tier 1+2）──
+├── CLAUDE.md · AGENTS.md   # AI 協作入口（可改/禁改區、慣例、DoD）
+├── project_status.md       # 目前狀態、未提交變更、下一步
+├── decision_log.md         # 架構決策（DEC-XXX）
+├── dev_log.md              # 開發歷程（問題/解法/驗證）
+├── TASK_TEMPLATE.md        # 任務卡模板
+└── docs/specs/             # 功能規格（GWT）；範例 feature-batch-crop.md
 ```
 
 ## 五個分頁（GUI）

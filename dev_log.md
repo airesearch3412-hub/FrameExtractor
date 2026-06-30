@@ -13,7 +13,8 @@
 | 動機 | 為 FrameExtractor 建立「跨 session 專案記憶」，讓後續 AI 協作有一致的規則與脈絡 |
 | 處理 | 評估後判定全導入過重（見 DEC-007），只建輕量核心：`CLAUDE.md`、`AGENTS.md`、`decision_log.md`、`dev_log.md`、`project_status.md`、`TASK_TEMPLATE.md`、`docs/specs/feature_spec_template.md`，並附範例規格 `docs/specs/feature-batch-crop.md`。全部客製為 FrameExtractor 版，未照搬 starter。 |
 | 驗證 | 文件結構自檢；DEC-001~006 回溯既有 git 歷史與本輪工作填實 |
-| 同步 | 本檔、`decision_log.md`(DEC-007)、`project_status.md` |
+| 同步 | 本檔、`decision_log.md`(DEC-007)、`project_status.md`、`README.md`（文件地圖 + 檔案結構） |
+| Commit | `1721240 docs: 導入輕量治理框架（SOP Tier 1+2）`（9 檔）；已隨 master push 至 origin |
 
 ---
 

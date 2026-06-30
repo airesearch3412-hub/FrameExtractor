@@ -33,22 +33,20 @@
 
 | 項目 | 狀態 |
 |---|---|
-| 裁剪預覽縮放 / 平移 | ✅ 已 commit（`8259140`，DEC-006） |
-| SOP 治理文件（CLAUDE/AGENTS/log/status/templates） | ✅ 本輪 commit |
-| `master` 領先 `origin/master` | 4 個 commit（批次裁剪、執行緒修正、縮放、治理文件），**尚未 push** |
+| 裁剪預覽縮放 / 平移 | ✅ 已 commit（`8259140`，DEC-006）+ push |
+| SOP 治理文件（CLAUDE/AGENTS/log/status/templates） | ✅ 已 commit（`1721240`）+ push |
+| `master` ↔ `origin/master` | ✅ 已同步（批次裁剪、執行緒修正、縮放、治理文件皆已推送）。本檔等文件更新後產生的新 commit 記得再 push。 |
 
 ---
 
 ## 四、阻塞 / 待決事項
 
-1. **是否 push** `master` 到 `origin`？（目前領先 4 個 commit）
-2. **「批次處理多去重」**功能範圍待確認（先前提出三種解讀，使用者尚未拍板）。
-3. `web/`（`UIUX_SPEC.md` + `wireframes/`）+ `.claude/workflows/jarvis-implement-web.js`：平行進行的「web 網站版」任務產物，非本治理任務範圍，未追蹤也未動。
+1. **「批次處理多去重」**功能範圍待確認（先前提出三種解讀，使用者尚未拍板）。
+2. `web/`（`UIUX_SPEC.md` + `wireframes/`）+ `.claude/workflows/jarvis-implement-web.js`：平行進行的「web 網站版」任務產物，非本治理任務範圍，未追蹤也未動。
 
 ---
 
 ## 五、下一步建議
 
-1. 視需要 push `master` 到 `origin`。
-2. 釐清「批次處理多去重」要做哪一種（批次資料夾去重 / 裁剪後去重 / 影片去重加強）。
-3. 視需要再評估是否補 Tier 2 的更多規格（每個主要功能補 `docs/specs/feature-*.md`）。
+1. 釐清「批次處理多去重」要做哪一種（批次資料夾去重 / 裁剪後去重 / 影片去重加強）。
+2. 視需要再評估是否補 Tier 2 的更多規格（每個主要功能補 `docs/specs/feature-*.md`）。
